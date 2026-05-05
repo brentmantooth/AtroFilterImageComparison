@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGroupBox, QFormLayout, QLineEdit, QFileDialog, QScrollArea,
+    QSizePolicy, QRubberBand,
+)
+
+from core.astro_image import AstroImage
+
+
+class ZoomableImageLabel(QLabel):
+    """QLabel that supports rubber-band ROI selection."""
+
+    roi_selected = pyqtSignal(int, int, int, int)  # x0, y0, x1, y1 in image coords
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(300, 300)
+        self._rubber_band = QRubberBand(QRubberBand.Rectangle, self)
+        self._origin = QPoint()
+        self._pixmap_orig: QPixmap | None = None
+        self._roi_mode = False
+
+    def set_roi_mode(self, enabled: bool) -> None:
+        self._roi_mode = enabled
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+
+    def set_image_array(self, arr: np.ndarray) -> None:
+        h, w = arr.shape
+        if arr.ndim == 2:
+            arr_uint8 = arr.astype(np.uint8)
+            qimg = QImage(arr_uint8.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            arr_uint8 = arr.astype(np.uint8)
+            qimg = QImage(arr_uint8.data, w, h, w * 3, QImage.Format_RGB888)
+        self._pixmap_orig = QPixmap.fromImage(qimg)
+        self._update_display()
+
+    def _update_display(self) -> None:
+        if self._pixmap_orig is not None:
+            scaled = self._pixmap_orig.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        self._update_display()
+        super().resizeEvent(event)
+
+    def mousePressEvent(self, event):
+        if self._roi_mode and event.button() == Qt.LeftButton:
+            self._origin = event.pos()
+            self._rubber_band.setGeometry(QRect(self._origin, self._origin))
+            self._rubber_band.show()
+
+    def mouseMoveEvent(self, event):
+        if self._roi_mode and not self._origin.isNull():
+            self._rubber_band.setGeometry(
+                QRect(self._origin, event.pos()).normalized())
+
+    def mouseReleaseEvent(self, event):
+        if self._roi_mode and event.button() == Qt.LeftButton:
+            self._rubber_band.hide()
+            rect = QRect(self._origin, event.pos()).normalized()
+            img_rect = self._image_coords(rect)
+            if img_rect:
+                self.roi_selected.emit(*img_rect)
+            self._origin = QPoint()
+
+    def _image_coords(self, widget_rect: QRect) -> tuple[int, int, int, int] | None:
+        if self._pixmap_orig is None or self.pixmap() is None:
+            return None
+        px = self.pixmap()
+        lw, lh = self.width(), self.height()
+        pw, ph = px.width(), px.height()
+        ox = (lw - pw) // 2
+        oy = (lh - ph) // 2
+        scale_x = self._pixmap_orig.width() / pw
+        scale_y = self._pixmap_orig.height() / ph
+        x0 = int((widget_rect.left() - ox) * scale_x)
+        y0 = int((widget_rect.top() - oy) * scale_y)
+        x1 = int((widget_rect.right() - ox) * scale_x)
+        y1 = int((widget_rect.bottom() - oy) * scale_y)
+        orig_w = self._pixmap_orig.width()
+        orig_h = self._pixmap_orig.height()
+        x0 = max(0, min(x0, orig_w))
+        y0 = max(0, min(y0, orig_h))
+        x1 = max(0, min(x1, orig_w))
+        y1 = max(0, min(y1, orig_h))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
+
+class ImagePanel(QWidget):
+    """Left or right image panel: file loading, display, metadata, bandwidth."""
+
+    image_loaded = pyqtSignal(object)   # emits AstroImage
+    roi_selected = pyqtSignal(int, int, int, int)
+
+    def __init__(self, title: str = "Image", parent=None):
+        super().__init__(parent)
+        self._image: AstroImage | None = None
+        self._build_ui(title)
+
+    def _build_ui(self, title: str) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Title + open button
+        top = QHBoxLayout()
+        top.addWidget(QLabel(f"<b>{title}</b>"))
+        top.addStretch()
+        self._btn_open = QPushButton("Open FITS / XISF…")
+        self._btn_open.clicked.connect(self._open_file)
+        top.addWidget(self._btn_open)
+        layout.addLayout(top)
+
+        # Image display
+        self._img_label = ZoomableImageLabel()
+        self._img_label.roi_selected.connect(self.roi_selected)
+        layout.addWidget(self._img_label, stretch=1)
+
+        # Metadata group
+        meta_box = QGroupBox("Image info")
+        meta_layout = QFormLayout(meta_box)
+        meta_layout.setLabelAlignment(Qt.AlignRight)
+        self._meta_fields: dict[str, QLabel] = {}
+        for key in ["File", "Telescope", "Camera", "Filter",
+                    "Exposure", "Gain", "Date", "Pixel scale", "Binning"]:
+            lbl = QLabel("—")
+            lbl.setWordWrap(True)
+            meta_layout.addRow(f"{key}:", lbl)
+            self._meta_fields[key] = lbl
+
+        # Bandwidth field (editable)
+        self._bw_edit = QLineEdit()
+        self._bw_edit.setPlaceholderText("e.g. 3")
+        self._bw_edit.setMaximumWidth(80)
+        bw_row = QHBoxLayout()
+        bw_row.addWidget(self._bw_edit)
+        bw_row.addWidget(QLabel("nm"))
+        bw_row.addStretch()
+        meta_layout.addRow("Bandwidth:", bw_row)
+
+        layout.addWidget(meta_box)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def image(self) -> AstroImage | None:
+        return self._image
+
+    def set_roi_mode(self, enabled: bool) -> None:
+        self._img_label.set_roi_mode(enabled)
+
+    def _open_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open image",
+            "",
+            "Astronomical images (*.fits *.fit *.fts *.xisf);;All files (*.*)",
+        )
+        if not path:
+            return
+        img = AstroImage(path)
+        try:
+            img.load()
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Load error", str(e))
+            return
+
+        self._image = img
+        self._populate_metadata(img)
+        self._show_stretched(img)
+        self.image_loaded.emit(img)
+
+    def apply_bandwidth_from_field(self) -> None:
+        """Push the bandwidth QLineEdit value into the AstroImage."""
+        if self._image is None:
+            return
+        txt = self._bw_edit.text().strip()
+        if txt:
+            try:
+                self._image.bandwidth_nm = float(txt)
+            except ValueError:
+                pass
+
+    # ------------------------------------------------------------------
+    # Private
+    # ------------------------------------------------------------------
+
+    def _populate_metadata(self, img: AstroImage) -> None:
+        self._meta_fields["File"].setText(Path(img.path).name)
+        for key in ["Telescope", "Camera", "Filter", "Exposure",
+                    "Gain", "Date", "Binning"]:
+            val = img.meta.get(key, "—")
+            self._meta_fields[key].setText(val)
+
+        scale_txt = f"{img.pixel_scale:.3f} \"/px"
+        if img.pixel_scale_is_estimated:
+            scale_txt += " (estimated)"
+        self._meta_fields["Pixel scale"].setText(scale_txt)
+
+        if img.bandwidth_nm is not None:
+            self._bw_edit.setText(str(img.bandwidth_nm))
+
+    def _show_stretched(self, img: AstroImage) -> None:
+        try:
+            display = img.display_image()
+            self._img_label.set_image_array(display)
+        except Exception:
+            pass

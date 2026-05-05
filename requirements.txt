@@ -1,0 +1,3 @@
+# conda install -c conda-forge pyqt astropy photutils scipy numpy matplotlib astroalign pillow pywavelets
+# pip install xisf
+xisf
