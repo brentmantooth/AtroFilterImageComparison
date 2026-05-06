@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QLabel, QLineEdit, QPushButton, QProgressBar, QFileDialog,
     QFormLayout, QDoubleSpinBox, QSpinBox, QSizePolicy,
@@ -133,7 +133,7 @@ class AnalysisControlPanel(QWidget):
         run_layout.addWidget(self._progress)
 
         self._status_label = QLabel("Ready")
-        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         run_layout.addWidget(self._status_label)
 
         run_layout.addStretch()

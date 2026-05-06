@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QSplitter, QMessageBox, QAction, QFileDialog,
+    QSplitter, QMessageBox, QFileDialog,
 )
 
 from gui.image_panel import ImagePanel
@@ -36,7 +37,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(6, 6, 6, 6)
 
         # Image panels side by side
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         self._panel_a = ImagePanel("Image A")
         self._panel_b = ImagePanel("Image B")
         splitter.addWidget(self._panel_a)

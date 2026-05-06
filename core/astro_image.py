@@ -14,6 +14,20 @@ from core.models import DEFAULT_PIXEL_SCALE
 # FITS keywords tried in priority order for pixel scale derivation
 _PIXEL_SCALE_KEYWORDS = ["CDELT1", "CD1_1", "PIXSCALE", "SCALE"]
 
+_DTYPE_LABELS: dict[str, str] = {
+    "uint8":   "8-bit unsigned int",
+    "int16":   "16-bit signed int",
+    "uint16":  "16-bit unsigned int",
+    "int32":   "32-bit signed int",
+    "uint32":  "32-bit unsigned int",
+    "float32": "32-bit float",
+    "float64": "64-bit float",
+}
+
+
+def _dtype_label(dtype: np.dtype) -> str:
+    return _DTYPE_LABELS.get(dtype.name, str(dtype))
+
 
 def statistical_stretch(data: np.ndarray,
                          blackpoint_sigma: float = 5.0,
@@ -51,6 +65,7 @@ class AstroImage:
         self.pixel_scale: float = DEFAULT_PIXEL_SCALE
         self.pixel_scale_is_estimated: bool = False
         self.bandwidth_nm: float | None = None
+        self.original_dtype: np.dtype | None = None   # dtype before float64 conversion
         self.background: Background2D | None = None
         self.background_rms: np.ndarray | None = None
         self._load_error: str | None = None
@@ -72,6 +87,7 @@ class AstroImage:
             raise ValueError(f"Unsupported file format: {suffix}")
 
         if self.data is not None:
+            self.original_dtype = self.data.dtype   # capture before float64 conversion
             self.data = self.data.astype(np.float64)
             self.pixel_scale = self._extract_pixel_scale()
             self.bandwidth_nm = self._extract_bandwidth()
@@ -100,7 +116,7 @@ class AstroImage:
         # xisf returns (H, W) or (H, W, C); take first channel if colour
         if img.ndim == 3:
             img = img[:, :, 0]
-        self.data = img.astype(np.float64)
+        self.data = img   # float64 conversion happens in load() after dtype is captured
         # Build a minimal header-like dict from XISF metadata
         meta_list = x.get_images_metadata()
         if meta_list:
@@ -164,6 +180,10 @@ class AstroImage:
     # ------------------------------------------------------------------
 
     def _extract_metadata(self) -> None:
+        # Bit depth — available regardless of header
+        if self.original_dtype is not None:
+            self.meta["Bit depth"] = _dtype_label(self.original_dtype)
+
         if self.header is None:
             return
         mapping = {
@@ -233,13 +253,24 @@ class AstroImage:
     # ------------------------------------------------------------------
 
     def display_image(self,
+                      stretch: bool = True,
                       blackpoint_sigma: float = 5.0,
                       target_median: float = 0.25) -> np.ndarray:
-        """Return uint8 array suitable for Qt display after statistical stretch."""
+        """Return uint8 array suitable for Qt display.
+
+        stretch=True  — SETIAstroSuite statistical stretch (default)
+        stretch=False — percentile-clipped linear scale (0.1%–99.9%)
+        """
         if self.data is None:
             raise RuntimeError("Image not loaded")
-        stretched = statistical_stretch(self.data, blackpoint_sigma, target_median)
-        return (stretched * 255).astype(np.uint8)
+        if stretch:
+            scaled = statistical_stretch(self.data, blackpoint_sigma, target_median)
+        else:
+            lo, hi = np.percentile(self.data, [0.1, 99.9])
+            if hi <= lo:
+                hi = lo + 1.0
+            scaled = np.clip((self.data - lo) / (hi - lo), 0.0, 1.0)
+        return (scaled * 255).astype(np.uint8)
 
     # ------------------------------------------------------------------
     # Repr

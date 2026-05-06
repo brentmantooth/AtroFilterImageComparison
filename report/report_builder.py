@@ -42,6 +42,9 @@ img { max-width: 100%; height: auto; border: 1px solid #ccc;
       border-radius: 4px; margin: 8px 0; }
 .caption { font-style: italic; color: #555; font-size: 0.92em;
            margin-top: -4px; margin-bottom: 12px; }
+.error-box { background: #f8d7da; border: 1px solid #f5c6cb;
+             border-radius: 4px; padding: 10px 14px; margin: 10px 0;
+             font-family: monospace; white-space: pre-wrap; font-size: 0.9em; }
 """
 
 
@@ -66,6 +69,14 @@ def _val(v, fmt=".3f", fallback="—") -> str:
     if isinstance(v, float):
         return format(v, fmt)
     return str(v)
+
+
+def _error_box(metric_key: str, ra: AnalysisResult, rb: AnalysisResult) -> str:
+    """Return an error box HTML if the metric failed, else empty string."""
+    err = ra.errors.get(metric_key) or rb.errors.get(metric_key)
+    if not err:
+        return ""
+    return f'<div class="error-box">⚠ <strong>Analysis failed:</strong> {err}</div>'
 
 
 def _better_worse_class(val_a, val_b, higher_is_better: bool = True) -> tuple[str, str]:
@@ -207,6 +218,7 @@ shown in the metadata table above.</div>"""
     # ── Section 3: PSF / MTF ──────────────────────────────────────────────────
 
     def _section_psf(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        err = _error_box("psf", ra, rb)
         pa = ra.psf_metrics or {}
         pb = rb.psf_metrics or {}
         ca, cb = _better_worse_class(pa.get("fwhm_px"), pb.get("fwhm_px"), higher_is_better=False)
@@ -223,6 +235,7 @@ shown in the metadata table above.</div>"""
 
         return f"""
 <h2>3. PSF / MTF &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
+{err}
 <div class="info-box">The Point Spread Function (PSF) describes how a point source
 (star) is rendered. FWHM measures the core width; smaller FWHM = sharper stars.
 The Modulation Transfer Function (MTF) shows how well contrast is preserved at each
@@ -283,6 +296,7 @@ large differences may indicate filter flatness issues.</div>"""
     # ── Section 4: Halo ───────────────────────────────────────────────────────
 
     def _section_halo(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        err = _error_box("halo", ra, rb)
         ha = ra.halo_metrics or {}
         hb = rb.halo_metrics or {}
         ca, cb = _better_worse_class(ha.get("halo_to_core_ratio"),
@@ -293,6 +307,7 @@ large differences may indicate filter flatness issues.</div>"""
 
         return f"""
 <h2>4. Halo Analysis &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
+{err}
 <div class="info-box">Halos around bright stars result from internal reflections
 within the filter substrate and AR coatings. The halo-to-core ratio measures the
 amplitude of the broad halo component relative to the star core. This ratio is
@@ -318,6 +333,7 @@ bright stars.</div>"""
     # ── Section 5: Ghost ──────────────────────────────────────────────────────
 
     def _section_ghost(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        err = _error_box("ghost", ra, rb)
         ga = ra.ghost_metrics or {}
         gb = rb.ghost_metrics or {}
         cands_a = ga.get("ghost_candidates", [])
@@ -338,6 +354,7 @@ bright stars.</div>"""
 
         return f"""
 <h2>5. Ghost Image Detection &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
+{err}
 <div class="info-box">Ghosts are discrete secondary images caused by reflections
 between the filter surfaces and the sensor. Unlike halos (which are diffuse),
 ghosts are localised and appear at specific offsets from bright stars.
@@ -361,6 +378,7 @@ The ghost/parent intensity ratio is valid across different bandwidths.</div>
 
     def _section_edge(self, ra: AnalysisResult, rb: AnalysisResult,
                        bw_differ: bool) -> str:
+        err = _error_box("edge", ra, rb)
         ea = ra.edge_metrics or {}
         eb = rb.edge_metrics or {}
         ca, cb = _better_worse_class(ea.get("edge_width_10_90_px"),
@@ -373,6 +391,7 @@ The ghost/parent intensity ratio is valid across different bandwidths.</div>
 
         return f"""
 <h2>6. Local Contrast / Edge Analysis</h2>
+{err}
 <div class="info-box">The Edge Spread Function (ESF) is extracted across a nebula
 emission boundary. Its derivative is the Line Spread Function (LSF). The 10–90%
 edge width measures how sharply the transition is rendered — a smaller value indicates
@@ -398,6 +417,7 @@ increase this ratio even with identical optical quality.</div>"""
     # ── Section 7: Power spectrum ──────────────────────────────────────────────
 
     def _section_power(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        err = _error_box("power", ra, rb)
         pa = ra.power_metrics or {}
         pb = rb.power_metrics or {}
         ca, cb = _better_worse_class(pa.get("mid_high_ratio"), pb.get("mid_high_ratio"))
@@ -406,6 +426,7 @@ increase this ratio even with identical optical quality.</div>"""
 
         return f"""
 <h2>7. Micro-contrast / Power Spectrum &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
+{err}
 <div class="info-box">The 2D power spectrum of a star-free nebula region reveals the
 spatial frequency content of the image. All data is divided by the mean signal before
 the FFT, making the result dimensionless and comparable across filters with different
@@ -427,6 +448,7 @@ the same target region.</div>
     # ── Section 8: Spatial detail ──────────────────────────────────────────────
 
     def _section_spatial(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        err = _error_box("spatial", ra, rb)
         sm = ra.spatial_metrics or {}
         figs = sm.get("figures", {})
 
@@ -468,6 +490,7 @@ the same target region.</div>
 
         return f"""
 <h2>8. Spatial Detail Comparison &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
+{err}
 <div class="info-box">All maps below are computed on mean-signal-normalised data
 (each image divided by its own mean signal), making them dimensionless and comparable
 across different filter bandwidths. Images are shown side-by-side with a shared

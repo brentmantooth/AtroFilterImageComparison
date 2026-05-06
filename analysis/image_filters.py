@@ -272,7 +272,7 @@ class SpatialDetailAnalyzer:
                 zeroed.append(detail)
             else:
                 zeroed.append(tuple(np.zeros_like(d) for d in detail))
-        return pywt.waverec2(zeroed, wavelet)
+        return pywt.waverec2(zeroed, wavelet, mode='periodization')
 
     # ------------------------------------------------------------------
     # Shared plotting helper

@@ -34,7 +34,7 @@ Python 3.10+ (tested with Anaconda 3.12.7)
 
 ### Conda packages
 ```bash
-conda install -c conda-forge pyqt astropy photutils scipy numpy matplotlib astroalign pillow pywavelets
+conda install -c conda-forge pyqt6 astropy photutils scipy numpy matplotlib astroalign pillow pywavelets
 ```
 
 ### Pip packages
@@ -53,7 +53,7 @@ git clone https://github.com/<your-username>/AtroFilterImageComparison.git
 cd AtroFilterImageComparison
 
 # Install dependencies (see Requirements above)
-conda install -c conda-forge pyqt astropy photutils scipy numpy matplotlib astroalign pillow pywavelets
+conda install -c conda-forge pyqt6 astropy photutils scipy numpy matplotlib astroalign pillow pywavelets
 pip install xisf
 ```
 
@@ -171,7 +171,7 @@ gui/
 | [PyWavelets](https://pywavelets.readthedocs.io/) | Daubechies-4 wavelet decomposition |
 | [astroalign](https://astroalign.quatrope.org/) | Image registration |
 | [xisf](https://pypi.org/project/xisf/) | PixInsight XISF format support |
-| [PyQt5](https://riverbankcomputing.com/software/pyqt/) | GUI framework |
+| [PyQt6](https://riverbankcomputing.com/software/pyqt/) | GUI framework |
 | [matplotlib](https://matplotlib.org/) | All plots and figures |
 
 Statistical stretch algorithm adapted from [SETIAstroSuite](https://www.setiastro.com/statistical-stretch) (MTF-based autostretch, equivalent to PixInsight STF).

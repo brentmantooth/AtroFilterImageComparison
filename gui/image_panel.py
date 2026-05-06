@@ -3,15 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QGroupBox, QFormLayout, QLineEdit, QFileDialog, QScrollArea,
     QSizePolicy, QRubberBand,
 )
 
 from core.astro_image import AstroImage
+
+MAX_DISPLAY_PX = 1024   # max dimension for on-screen display (downsampled for speed)
+
+
+def _downsample_for_display(arr: np.ndarray) -> np.ndarray:
+    """Stride-sample arr so its longest dimension is ≤ MAX_DISPLAY_PX."""
+    max_dim = max(arr.shape[:2])
+    if max_dim <= MAX_DISPLAY_PX:
+        return arr
+    step = max_dim // MAX_DISPLAY_PX + 1
+    return arr[::step, ::step]
 
 
 class ZoomableImageLabel(QLabel):
@@ -21,33 +32,34 @@ class ZoomableImageLabel(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(300, 300)
-        self._rubber_band = QRubberBand(QRubberBand.Rectangle, self)
+        self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._origin = QPoint()
         self._pixmap_orig: QPixmap | None = None
         self._roi_mode = False
 
     def set_roi_mode(self, enabled: bool) -> None:
         self._roi_mode = enabled
-        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
 
     def set_image_array(self, arr: np.ndarray) -> None:
-        h, w = arr.shape
+        arr = _downsample_for_display(arr)
+        h, w = arr.shape[:2]
         if arr.ndim == 2:
-            arr_uint8 = arr.astype(np.uint8)
-            qimg = QImage(arr_uint8.data, w, h, w, QImage.Format_Grayscale8)
+            arr_uint8 = np.ascontiguousarray(arr.astype(np.uint8))
+            qimg = QImage(arr_uint8.data, w, h, w, QImage.Format.Grayscale8)
         else:
-            arr_uint8 = arr.astype(np.uint8)
-            qimg = QImage(arr_uint8.data, w, h, w * 3, QImage.Format_RGB888)
+            arr_uint8 = np.ascontiguousarray(arr.astype(np.uint8))
+            qimg = QImage(arr_uint8.data, w, h, w * 3, QImage.Format.RGB888)
         self._pixmap_orig = QPixmap.fromImage(qimg)
         self._update_display()
 
     def _update_display(self) -> None:
         if self._pixmap_orig is not None:
             scaled = self._pixmap_orig.scaled(
-                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.setPixmap(scaled)
 
     def resizeEvent(self, event):
@@ -55,7 +67,7 @@ class ZoomableImageLabel(QLabel):
         super().resizeEvent(event)
 
     def mousePressEvent(self, event):
-        if self._roi_mode and event.button() == Qt.LeftButton:
+        if self._roi_mode and event.button() == Qt.MouseButton.LeftButton:
             self._origin = event.pos()
             self._rubber_band.setGeometry(QRect(self._origin, self._origin))
             self._rubber_band.show()
@@ -66,7 +78,7 @@ class ZoomableImageLabel(QLabel):
                 QRect(self._origin, event.pos()).normalized())
 
     def mouseReleaseEvent(self, event):
-        if self._roi_mode and event.button() == Qt.LeftButton:
+        if self._roi_mode and event.button() == Qt.MouseButton.LeftButton:
             self._rubber_band.hide()
             rect = QRect(self._origin, event.pos()).normalized()
             img_rect = self._image_coords(rect)
@@ -114,10 +126,16 @@ class ImagePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Title + open button
+        # Title + stretch checkbox + open button
         top = QHBoxLayout()
         top.addWidget(QLabel(f"<b>{title}</b>"))
         top.addStretch()
+        self._stretch_cb = QCheckBox("Stretch")
+        self._stretch_cb.setChecked(True)
+        self._stretch_cb.setToolTip("Auto-stretch display (statistical MTF stretch).\n"
+                                    "Uncheck for linear 0.1–99.9% percentile view.")
+        self._stretch_cb.toggled.connect(self._refresh_display)
+        top.addWidget(self._stretch_cb)
         self._btn_open = QPushButton("Open FITS / XISF…")
         self._btn_open.clicked.connect(self._open_file)
         top.addWidget(self._btn_open)
@@ -131,9 +149,9 @@ class ImagePanel(QWidget):
         # Metadata group
         meta_box = QGroupBox("Image info")
         meta_layout = QFormLayout(meta_box)
-        meta_layout.setLabelAlignment(Qt.AlignRight)
+        meta_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self._meta_fields: dict[str, QLabel] = {}
-        for key in ["File", "Telescope", "Camera", "Filter",
+        for key in ["File", "Bit depth", "Telescope", "Camera", "Filter",
                     "Exposure", "Gain", "Date", "Pixel scale", "Binning"]:
             lbl = QLabel("—")
             lbl.setWordWrap(True)
@@ -175,13 +193,13 @@ class ImagePanel(QWidget):
         try:
             img.load()
         except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
+            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Load error", str(e))
             return
 
         self._image = img
         self._populate_metadata(img)
-        self._show_stretched(img)
+        self._refresh_display()
         self.image_loaded.emit(img)
 
     def apply_bandwidth_from_field(self) -> None:
@@ -201,7 +219,7 @@ class ImagePanel(QWidget):
 
     def _populate_metadata(self, img: AstroImage) -> None:
         self._meta_fields["File"].setText(Path(img.path).name)
-        for key in ["Telescope", "Camera", "Filter", "Exposure",
+        for key in ["Bit depth", "Telescope", "Camera", "Filter", "Exposure",
                     "Gain", "Date", "Binning"]:
             val = img.meta.get(key, "—")
             self._meta_fields[key].setText(val)
@@ -214,9 +232,12 @@ class ImagePanel(QWidget):
         if img.bandwidth_nm is not None:
             self._bw_edit.setText(str(img.bandwidth_nm))
 
-    def _show_stretched(self, img: AstroImage) -> None:
+    def _refresh_display(self) -> None:
+        if self._image is None:
+            return
         try:
-            display = img.display_image()
+            stretch = self._stretch_cb.isChecked()
+            display = self._image.display_image(stretch=stretch)
             self._img_label.set_image_array(display)
         except Exception:
             pass

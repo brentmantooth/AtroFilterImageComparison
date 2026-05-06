@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.astro_image import AstroImage
 from core.models import AnalysisResult
@@ -65,43 +65,73 @@ class AnalysisThread(QThread):
 
         if metrics.get("psf"):
             advance("Computing PSF / MTF…")
-            analyzer = PSFAnalyzer()
-            result_a.psf_metrics = analyzer.analyze(img_a)
-            result_b.psf_metrics = analyzer.analyze(img_b)
+            try:
+                analyzer = PSFAnalyzer()
+                result_a.psf_metrics = analyzer.analyze(img_a)
+                result_b.psf_metrics = analyzer.analyze(img_b)
+            except Exception as exc:
+                msg = f"PSF/MTF analysis failed: {exc}"
+                result_a.errors["psf"] = msg
+                result_b.errors["psf"] = msg
 
         if metrics.get("halo"):
             advance("Analysing halos…")
-            analyzer = HaloAnalyzer()
-            result_a.halo_metrics = analyzer.analyze(img_a)
-            result_b.halo_metrics = analyzer.analyze(img_b)
+            try:
+                analyzer = HaloAnalyzer()
+                result_a.halo_metrics = analyzer.analyze(img_a)
+                result_b.halo_metrics = analyzer.analyze(img_b)
+            except Exception as exc:
+                msg = f"Halo analysis failed: {exc}"
+                result_a.errors["halo"] = msg
+                result_b.errors["halo"] = msg
 
         if metrics.get("ghost"):
             advance("Searching for ghosts…")
-            fwhm_a = (result_a.psf_metrics or {}).get("fwhm_px") or 4.0
-            fwhm_b = (result_b.psf_metrics or {}).get("fwhm_px") or 4.0
-            det = GhostDetector()
-            result_a.ghost_metrics = det.analyze(img_a, psf_fwhm_px=fwhm_a)
-            result_b.ghost_metrics = det.analyze(img_b, psf_fwhm_px=fwhm_b)
+            try:
+                fwhm_a = (result_a.psf_metrics or {}).get("fwhm_px") or 4.0
+                fwhm_b = (result_b.psf_metrics or {}).get("fwhm_px") or 4.0
+                det = GhostDetector()
+                result_a.ghost_metrics = det.analyze(img_a, psf_fwhm_px=fwhm_a)
+                result_b.ghost_metrics = det.analyze(img_b, psf_fwhm_px=fwhm_b)
+            except Exception as exc:
+                msg = f"Ghost detection failed: {exc}"
+                result_a.errors["ghost"] = msg
+                result_b.errors["ghost"] = msg
 
         if metrics.get("edge"):
             advance("Extracting edge spread function…")
-            ea = EdgeAnalyzer()
-            result_a.edge_metrics = ea.analyze(img_a, roi=roi)
-            result_b.edge_metrics = ea.analyze(img_b, roi=roi)
+            try:
+                ea = EdgeAnalyzer()
+                result_a.edge_metrics = ea.analyze(img_a, roi=roi)
+                result_b.edge_metrics = ea.analyze(img_b, roi=roi)
+            except Exception as exc:
+                msg = f"Edge analysis failed: {exc}"
+                result_a.errors["edge"] = msg
+                result_b.errors["edge"] = msg
 
         if metrics.get("power"):
             advance("Computing power spectrum…")
-            pa = PowerSpectrumAnalyzer()
-            result_a.power_metrics = pa.analyze(img_a, roi=roi)
-            result_b.power_metrics = pa.analyze(img_b, roi=roi)
+            try:
+                pa = PowerSpectrumAnalyzer()
+                result_a.power_metrics = pa.analyze(img_a, roi=roi)
+                result_b.power_metrics = pa.analyze(img_b, roi=roi)
+            except Exception as exc:
+                msg = f"Power spectrum analysis failed: {exc}"
+                result_a.errors["power"] = msg
+                result_b.errors["power"] = msg
 
         if metrics.get("spatial"):
             advance("Running spatial detail analysis…")
-            wavelet_levels = s.get("wavelet_levels", 4)
-            sda = SpatialDetailAnalyzer()
-            spatial = sda.analyze(img_a, img_b, levels=wavelet_levels)
-            result_a.spatial_metrics = spatial
-            result_b.spatial_metrics = spatial  # shared reference
+            try:
+                wavelet_levels = s.get("wavelet_levels", 4)
+                sda = SpatialDetailAnalyzer()
+                spatial = sda.analyze(img_a, img_b, levels=wavelet_levels)
+                result_a.spatial_metrics = spatial
+                result_b.spatial_metrics = spatial  # shared reference
+            except Exception as exc:
+                msg = f"Spatial detail analysis failed: {exc}"
+                result_a.errors["spatial"] = msg
+                result_b.errors["spatial"] = msg
 
         # Generate report
         advance("Generating HTML report…")
