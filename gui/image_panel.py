@@ -38,6 +38,7 @@ class ZoomableImageLabel(QLabel):
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._origin = QPoint()
         self._pixmap_orig: QPixmap | None = None
+        self._display_arr: np.ndarray | None = None   # keeps buffer alive for QImage
         self._roi_mode = False
 
     def set_roi_mode(self, enabled: bool) -> None:
@@ -48,11 +49,11 @@ class ZoomableImageLabel(QLabel):
         arr = _downsample_for_display(arr)
         h, w = arr.shape[:2]
         if arr.ndim == 2:
-            arr_uint8 = np.ascontiguousarray(arr.astype(np.uint8))
-            qimg = QImage(arr_uint8.data, w, h, w, QImage.Format.Grayscale8)
+            self._display_arr = np.ascontiguousarray(arr.astype(np.uint8))
+            qimg = QImage(self._display_arr.data, w, h, w, QImage.Format.Format_Grayscale8)
         else:
-            arr_uint8 = np.ascontiguousarray(arr.astype(np.uint8))
-            qimg = QImage(arr_uint8.data, w, h, w * 3, QImage.Format.RGB888)
+            self._display_arr = np.ascontiguousarray(arr.astype(np.uint8))
+            qimg = QImage(self._display_arr.data, w, h, w * 3, QImage.Format.Format_RGB888)
         self._pixmap_orig = QPixmap.fromImage(qimg)
         self._update_display()
 
@@ -146,27 +147,43 @@ class ImagePanel(QWidget):
         self._img_label.roi_selected.connect(self.roi_selected)
         layout.addWidget(self._img_label, stretch=1)
 
-        # Metadata group
+        # Metadata group — two side-by-side columns to reduce height
         meta_box = QGroupBox("Image info")
-        meta_layout = QFormLayout(meta_box)
-        meta_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        meta_outer = QVBoxLayout(meta_box)
+        meta_outer.setContentsMargins(4, 4, 4, 4)
+
+        cols = QHBoxLayout()
+        left_form = QFormLayout()
+        left_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        right_form = QFormLayout()
+        right_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
         self._meta_fields: dict[str, QLabel] = {}
-        for key in ["File", "Bit depth", "Telescope", "Camera", "Filter",
-                    "Exposure", "Gain", "Date", "Pixel scale", "Binning"]:
+        for key in ["File", "Telescope", "Camera", "Filter", "Exposure"]:
             lbl = QLabel("—")
             lbl.setWordWrap(True)
-            meta_layout.addRow(f"{key}:", lbl)
+            left_form.addRow(f"{key}:", lbl)
+            self._meta_fields[key] = lbl
+        for key in ["Bit depth", "Gain", "Date", "Pixel scale", "Binning"]:
+            lbl = QLabel("—")
+            lbl.setWordWrap(True)
+            right_form.addRow(f"{key}:", lbl)
             self._meta_fields[key] = lbl
 
-        # Bandwidth field (editable)
+        cols.addLayout(left_form)
+        cols.addLayout(right_form)
+        meta_outer.addLayout(cols)
+
+        # Bandwidth field (editable) — full width below the two columns
         self._bw_edit = QLineEdit()
         self._bw_edit.setPlaceholderText("e.g. 3")
         self._bw_edit.setMaximumWidth(80)
         bw_row = QHBoxLayout()
+        bw_row.addWidget(QLabel("Bandwidth:"))
         bw_row.addWidget(self._bw_edit)
         bw_row.addWidget(QLabel("nm"))
         bw_row.addStretch()
-        meta_layout.addRow("Bandwidth:", bw_row)
+        meta_outer.addLayout(bw_row)
 
         layout.addWidget(meta_box)
 
@@ -239,5 +256,5 @@ class ImagePanel(QWidget):
             stretch = self._stretch_cb.isChecked()
             display = self._image.display_image(stretch=stretch)
             self._img_label.set_image_array(display)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._img_label.setText(f"Display error:\n{exc}")
