@@ -160,7 +160,10 @@ class GhostDetector:
                                radius=15, color="cyan", fill=False, linewidth=1.2)
             ax.add_patch(circ)
 
-        for c in candidates:
+        top_cands = sorted(candidates,
+                           key=lambda c: c.get("intensity_ratio", 0),
+                           reverse=True)[:25]
+        for c in top_cands:
             ax.annotate("",
                         xy=(c["parent_x"] + c["dx"], c["parent_y"] + c["dy"]),
                         xytext=(c["parent_x"], c["parent_y"]),
@@ -168,8 +171,10 @@ class GhostDetector:
             ax.plot(c["parent_x"] + c["dx"], c["parent_y"] + c["dy"],
                     "rx", markersize=8, markeredgewidth=1.5)
 
+        total = len(candidates)
+        note = f"  (showing top 25 of {total})" if total > 25 else ""
         ax.set_title(f"Ghost candidates — {label}\n"
-                     f"Cyan=searched stars, Red=ghost candidates")
+                     f"Cyan=searched stars, Red=ghost candidates{note}")
         ax.set_xlabel("X (px)")
         ax.set_ylabel("Y (px)")
         fig.tight_layout()

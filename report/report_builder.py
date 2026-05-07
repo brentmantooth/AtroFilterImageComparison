@@ -58,9 +58,9 @@ img { max-width: 100%; height: auto; border: 1px solid #ccc;
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _fig_to_b64(fig: plt.Figure) -> str:
+def _fig_to_b64(fig: plt.Figure, dpi: int = 120) -> str:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
@@ -69,6 +69,13 @@ def _img_tag(fig: plt.Figure, alt: str = "") -> str:
     if fig is None:
         return ""
     return f'<img src="data:image/png;base64,{_fig_to_b64(fig)}" alt="{alt}">'
+
+
+def _hires_img_tag(fig: plt.Figure, alt: str = "") -> str:
+    """Like _img_tag but saved at 150 dpi for detail-heavy maps."""
+    if fig is None:
+        return ""
+    return f'<img src="data:image/png;base64,{_fig_to_b64(fig, dpi=150)}" alt="{alt}">'
 
 
 def _arr_to_b64_png(arr: np.ndarray) -> str:
@@ -666,9 +673,9 @@ bright stars.</div>"""
             peak_b = float(np.percentile(cut_b, 99.9)) if cut_b.size > 0 else 1.0
             shared_max = max(peak_a, peak_b, 1e-9)
 
-            # Asinh stretch: softening=0.05 boosts faint halo emission (1-20% of peak)
-            # to 30-70% of the display range, while the saturated core clips cleanly.
-            _soft = 0.05
+            # Asinh stretch: softening=0.005 maps 5% of peak to ~50% of display range,
+            # making faint halo emission clearly visible while the core clips cleanly.
+            _soft = 0.005
             _norm = np.arcsinh(1.0 / _soft)
             def _asinh(arr):
                 return np.arcsinh(np.clip(arr / shared_max, 0.0, None) / _soft) / _norm
@@ -679,7 +686,7 @@ bright stars.</div>"""
             ax_a = axes[row, col_base]
             ax_b = axes[row, col_base + 1]
 
-            ax_a.imshow(disp_a, origin="lower", cmap="inferno",
+            ax_a.imshow(disp_a, origin="lower", cmap="turbo",
                         vmin=0, vmax=1, interpolation="nearest", aspect="equal")
             h2c_a = sa.get("halo_to_core_ratio")
             ax_a.set_title(f"#{idx+1} {ra.label}"
@@ -687,7 +694,7 @@ bright stars.</div>"""
                            fontsize=7)
             ax_a.axis("off")
 
-            ax_b.imshow(disp_b, origin="lower", cmap="inferno",
+            ax_b.imshow(disp_b, origin="lower", cmap="turbo",
                         vmin=0, vmax=1, interpolation="nearest", aspect="equal")
             if sb is not None:
                 h2c_b = sb.get("halo_to_core_ratio")
@@ -700,7 +707,7 @@ bright stars.</div>"""
 
         fig.suptitle(
             f"Top {n} halo stars — {ra.label} (left) vs {rb.label} (right) "
-            f"per pair  |  shared scale per pair  |  asinh stretch (softening=0.05)",
+            f"per pair  |  shared scale per pair  |  asinh stretch (softening=0.005, turbo colormap)",
             fontsize=9,
         )
         fig.tight_layout()
@@ -914,7 +921,7 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
             out = ""
             for key in sorted(figs):
                 if key.startswith(prefix):
-                    out += _img_tag(figs[key], key) + "\n"
+                    out += _hires_img_tag(figs[key], key) + "\n"
             return out
 
         sl_note = ""
@@ -967,7 +974,7 @@ indicates signal-dominated.
 Estimated noise (σ): <strong>{ra.label}</strong> = {sigma_a},
 <strong>{rb.label}</strong> = {sigma_b} (normalised units)</div>
 
-{_img_tag(figs.get("wavelet_snr"), "Wavelet SNR")}
+{_hires_img_tag(figs.get("wavelet_snr"), "Wavelet SNR")}
 <p class="caption">Per-level SNR for both filters. Level 1 SNR &lt; 1 is expected
 (noise-dominated). A filter preserving more fine detail shows higher SNR at level 2.</p>
 

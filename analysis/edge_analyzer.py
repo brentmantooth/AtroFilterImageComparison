@@ -63,7 +63,8 @@ class EdgeAnalyzer:
         result["edge_contrast_ratio"] = ecr
 
         result["figures"] = {
-            "edge": self._plot_results(roi_data, positions, esf, lsf, width, image.label)
+            "edge": self._plot_results(roi_data, positions, esf, lsf, width,
+                                       image.label, edge_info)
         }
 
         return result
@@ -195,7 +196,8 @@ class EdgeAnalyzer:
                        esf: np.ndarray,
                        lsf: np.ndarray,
                        width: float | None,
-                       label: str) -> plt.Figure:
+                       label: str,
+                       edge_info: dict | None = None) -> plt.Figure:
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
         # ROI image
@@ -204,6 +206,30 @@ class EdgeAnalyzer:
         axes[0].set_title(f"Edge ROI — {label}")
         axes[0].set_xlabel("X (px)")
         axes[0].set_ylabel("Y (px)")
+
+        # Overlay lines showing the edge location and ESF scan direction
+        if edge_info is not None:
+            xc = edge_info["center_x"]
+            yc = edge_info["center_y"]
+            angle = edge_info["angle_rad"]
+            h, w = roi_data.shape
+            t = max(h, w)
+
+            # Cyan line: scan direction (perpendicular to edge, i.e. gradient direction)
+            axes[0].plot(
+                [xc - t * np.cos(angle), xc + t * np.cos(angle)],
+                [yc - t * np.sin(angle), yc + t * np.sin(angle)],
+                color="cyan", linewidth=1.5, alpha=0.85, label="ESF scan direction",
+            )
+            # Yellow dashed line: edge orientation (along the edge)
+            perp = angle + np.pi / 2
+            axes[0].plot(
+                [xc - t * np.cos(perp), xc + t * np.cos(perp)],
+                [yc - t * np.sin(perp), yc + t * np.sin(perp)],
+                color="yellow", linewidth=1.2, linestyle="--", alpha=0.75,
+                label="Edge orientation",
+            )
+            axes[0].legend(fontsize=7, loc="lower right")
 
         # ESF
         axes[1].plot(positions, esf, "b-", linewidth=1.5)

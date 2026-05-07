@@ -310,25 +310,33 @@ class SpatialDetailAnalyzer:
             dvmin = float(np.percentile(diff, 0.5))
             dvmax = float(np.percentile(diff, 99.5))
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        for ax, arr, title in zip(axes[:2], [arr_a, arr_b], [title_a, title_b]):
+        # 2×2 mosaic: A and B on the top row, difference spanning the full bottom row.
+        fig, axes_dict = plt.subplot_mosaic(
+            [["a", "b"], ["diff", "diff"]],
+            figsize=(14, 12),
+            constrained_layout=True,
+        )
+        ax_a    = axes_dict["a"]
+        ax_b    = axes_dict["b"]
+        ax_diff = axes_dict["diff"]
+
+        for ax, arr, title in zip([ax_a, ax_b], [arr_a, arr_b], [title_a, title_b]):
             im = ax.imshow(arr, origin="lower", cmap=cmap,
                            norm=norm if norm is not None else None,
                            vmin=None if norm is not None else vmin,
                            vmax=None if norm is not None else vmax,
                            interpolation="nearest", aspect="auto")
-            ax.set_title(title, fontsize=9)
+            ax.set_title(title, fontsize=10)
             ax.axis("off")
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        im_diff = axes[2].imshow(diff, origin="lower", cmap="RdBu_r",
-                                   vmin=dvmin, vmax=dvmax,
-                                   interpolation="nearest", aspect="auto")
-        axes[2].set_title(diff_title, fontsize=9)
-        axes[2].axis("off")
-        plt.colorbar(im_diff, ax=axes[2], fraction=0.046, pad=0.04)
+        im_diff = ax_diff.imshow(diff, origin="lower", cmap="RdBu_r",
+                                  vmin=dvmin, vmax=dvmax,
+                                  interpolation="nearest", aspect="auto")
+        ax_diff.set_title(diff_title, fontsize=10)
+        ax_diff.axis("off")
+        fig.colorbar(im_diff, ax=ax_diff, fraction=0.023, pad=0.02)
 
-        fig.tight_layout()
         return fig
 
     def _plot_snr_bars(self, snr_a: dict, snr_b: dict,
