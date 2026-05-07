@@ -57,6 +57,8 @@ class AstroImage:
         self.background: Background2D | None = None
         self.background_rms: np.ndarray | None = None
         self._load_error: str | None = None
+        self.is_color: bool = False                    # True when RGB file was converted to luminance
+        self.starless_image: AstroImage | None = None  # Set by ImagePanel when starless is loaded
 
         # Extracted metadata for display
         self.meta: dict = {}
@@ -84,13 +86,23 @@ class AstroImage:
     def _load_fits(self) -> None:
         with fits.open(self.path) as hdul:
             for hdu in hdul:
-                if (hdu.data is not None
-                        and hdu.data.ndim == 2
-                        and max(hdu.data.shape) > 100):
-                    self.data = hdu.data.copy()
+                if hdu.data is None or max(hdu.data.shape) <= 100:
+                    continue
+                d = hdu.data
+                if d.ndim == 2:
+                    self.data = d.copy()
                     self.header = hdu.header.copy()
                     return
-        raise ValueError(f"No valid 2D image data found in {self.path.name}")
+                if d.ndim == 3:
+                    # FITS stores color as (C, H, W) after numpy transposition
+                    if d.shape[0] >= 3:
+                        self.data = (0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2]).copy()
+                    else:
+                        self.data = d[0].copy()
+                    self.header = hdu.header.copy()
+                    self.is_color = True
+                    return
+        raise ValueError(f"No valid image data found in {self.path.name}")
 
     def _load_xisf(self) -> None:
         try:
@@ -101,9 +113,13 @@ class AstroImage:
         img = x.read_image(0)
         if img is None:
             raise ValueError(f"No image data in {self.path.name}")
-        # xisf returns (H, W) or (H, W, C); take first channel if colour
+        # xisf returns (H, W) or (H, W, C); convert colour to luminance
         if img.ndim == 3:
-            img = img[:, :, 0]
+            if img.shape[2] >= 3:
+                img = 0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]
+            else:
+                img = img[:, :, 0]
+            self.is_color = True
         self.data = img   # float64 conversion happens in load() after dtype is captured
         # Build a minimal header-like dict from XISF metadata
         meta_list = x.get_images_metadata()

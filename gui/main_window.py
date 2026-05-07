@@ -142,7 +142,12 @@ class MainWindow(QMainWindow):
         # Merge ROI from the window state into settings
         settings["roi"] = self._roi
 
-        self._thread = AnalysisThread(img_a, img_b, settings, parent=self)
+        self._thread = AnalysisThread(
+            img_a, img_b, settings,
+            starless_a=self._panel_a.starless_image,
+            starless_b=self._panel_b.starless_image,
+            parent=self,
+        )
         self._thread.progress.connect(self._on_progress)
         self._thread.finished.connect(self._on_finished)
         self._thread.error.connect(self._on_error)

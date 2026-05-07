@@ -121,6 +121,7 @@ class ImagePanel(QWidget):
     def __init__(self, title: str = "Image", parent=None):
         super().__init__(parent)
         self._image: AstroImage | None = None
+        self._starless_image: AstroImage | None = None
         self._build_ui(title)
 
     def _build_ui(self, title: str) -> None:
@@ -185,6 +186,15 @@ class ImagePanel(QWidget):
         bw_row.addStretch()
         meta_outer.addLayout(bw_row)
 
+        # Starless filename label
+        sl_row = QHBoxLayout()
+        sl_row.addWidget(QLabel("Starless:"))
+        self._starless_lbl = QLabel("—")
+        self._starless_lbl.setStyleSheet("color: #666;")
+        sl_row.addWidget(self._starless_lbl)
+        sl_row.addStretch()
+        meta_outer.addLayout(sl_row)
+
         layout.addWidget(meta_box)
 
     # ------------------------------------------------------------------
@@ -194,6 +204,10 @@ class ImagePanel(QWidget):
     @property
     def image(self) -> AstroImage | None:
         return self._image
+
+    @property
+    def starless_image(self) -> AstroImage | None:
+        return self._starless_image
 
     def set_roi_mode(self, enabled: bool) -> None:
         self._img_label.set_roi_mode(enabled)
@@ -218,9 +232,49 @@ class ImagePanel(QWidget):
             return
 
         self._image = img
+        self._starless_image = None
+        self._starless_lbl.setText("—")
+        self._starless_lbl.setStyleSheet("color: #666;")
         self._populate_metadata(img)
         self._refresh_display()
         self.image_loaded.emit(img)
+        self._ask_about_starless(img)
+
+    def _ask_about_starless(self, img: AstroImage) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+        prefix = ""
+        if img.is_color:
+            prefix = ("This is a color (RGB) image. It has been converted to "
+                      "luminance for analysis.\n\n")
+        answer = QMessageBox.question(
+            self, "Starless image",
+            prefix + "Do you have a starless version of this image?\n\n"
+            "If yes, it will be used for power spectrum and spatial detail "
+            "analysis to reduce star contamination.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        settings = QSettings("FilterImageComparator", "FilterImageComparator")
+        last_dir = settings.value("last_data_dir", "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open starless image", last_dir,
+            "Astronomical images (*.fits *.fit *.fts *.xisf);;All files (*.*)",
+        )
+        if not path:
+            return
+        sl = AstroImage(path)
+        try:
+            sl.load()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox as _MB
+            _MB.critical(self, "Load error", f"Starless load failed:\n{e}")
+            return
+        self._starless_image = sl
+        img.starless_image = sl
+        self._starless_lbl.setText(sl.path.name)
+        self._starless_lbl.setStyleSheet("color: #155724;")
 
     def apply_bandwidth_from_field(self) -> None:
         """Push the bandwidth QLineEdit value into the AstroImage."""
@@ -238,7 +292,10 @@ class ImagePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_metadata(self, img: AstroImage) -> None:
-        self._meta_fields["File"].setText(Path(img.path).name)
+        fname = Path(img.path).name
+        if img.is_color:
+            fname += " (color→lum)"
+        self._meta_fields["File"].setText(fname)
         for key in ["Bit depth", "Telescope", "Camera", "Filter", "Exposure",
                     "Gain", "Date", "Binning"]:
             val = img.meta.get(key, "—")

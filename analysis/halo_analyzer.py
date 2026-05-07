@@ -51,17 +51,30 @@ class HaloAnalyzer:
 
         bgsub = image.background_subtracted()
         profiles = []
+        per_star = []
         for row in halo_stars:
-            xc, yc = row["xcentroid"], row["ycentroid"]
+            xc, yc = float(row["xcentroid"]), float(row["ycentroid"])
             r, I = self._extract_radial_profile(bgsub, xc, yc, HALO_FIT_RADIUS_PX)
             if len(r) < 10:
                 continue
             # Normalize to peak
             peak = I[0] if I[0] > 0 else 1.0
-            profiles.append((r, I / peak))
+            I_norm = I / peak
+            profiles.append((r, I_norm))
+            # Per-star halo fit for ranking
+            fit = self._fit_two_component(r, I_norm)
+            if fit is not None:
+                per_star.append({
+                    "xc": xc, "yc": yc,
+                    "halo_to_core_ratio": fit["halo_to_core_ratio"],
+                    "halo_radius_px": fit["halo_radius_px"],
+                })
 
         if not profiles:
             return result
+
+        per_star.sort(key=lambda s: s["halo_to_core_ratio"], reverse=True)
+        result["star_data"] = per_star
 
         # Median stack normalized profiles
         common_r = profiles[0][0]

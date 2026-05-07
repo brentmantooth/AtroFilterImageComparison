@@ -7,10 +7,17 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import matplotlib
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from scipy.signal import fftconvolve
+from scipy.ndimage import zoom as _ndimage_zoom
+from PIL import Image as _PILImage
 
-from core.models import AnalysisResult
+from core.models import AnalysisResult, HALO_FIT_RADIUS_PX
 from core.astro_image import AstroImage
+
+_TEST_IMAGE_PATH = Path(__file__).parent.parent / "resources" / "ContrastTestImage.png"
 
 
 # ── CSS ──────────────────────────────────────────────────────────────────────
@@ -113,7 +120,7 @@ class ReportBuilder:
             self._section_header(image_a, image_b, result_a, result_b, bw_differ),
             self._section_observation(result_a, result_b),
             self._section_psf(result_a, result_b),
-            self._section_halo(result_a, result_b),
+            self._section_halo(result_a, result_b, image_a, image_b),
             self._section_ghost(result_a, result_b),
             self._section_edge(result_a, result_b, bw_differ),
             self._section_power(result_a, result_b),
@@ -174,10 +181,31 @@ class ReportBuilder:
             if n_total is not None:
                 rows += (f"<tr><td><strong>Stars detected</strong></td>"
                          f"<td>{n_total}</td></tr>")
+            sl = getattr(img, "starless_image", None)
+            if sl is not None:
+                rows += (f"<tr><td><strong>Starless</strong></td>"
+                         f"<td>{sl.path.name}</td></tr>")
             return rows
+
+        # Compute linear stretch limits from main image data for starless thumbnails
+        lo_a, hi_a = np.percentile(img_a.data, [0.1, 99.9])
+        lo_b, hi_b = np.percentile(img_b.data, [0.1, 99.9])
+        sl_a = getattr(img_a, "starless_image", None)
+        sl_b = getattr(img_b, "starless_image", None)
 
         thumb_a = _img_tag(self._thumbnail_fig(img_a), f"Preview {img_a.label}")
         thumb_b = _img_tag(self._thumbnail_fig(img_b), f"Preview {img_b.label}")
+        thumb_sl_a = _img_tag(self._thumbnail_fig(sl_a, lo=lo_a, hi=hi_a),
+                               f"Starless {img_a.label}") if sl_a else ""
+        thumb_sl_b = _img_tag(self._thumbnail_fig(sl_b, lo=lo_b, hi=hi_b),
+                               f"Starless {img_b.label}") if sl_b else ""
+
+        sl_cap_a = ('<p class="caption">Starless (linear stretch, same scale)</p>'
+                    if sl_a else "")
+        sl_cap_b = ('<p class="caption">Starless (linear stretch, same scale)</p>'
+                    if sl_b else "")
+
+        hist_tag = _img_tag(self._plot_image_histograms(img_a, img_b), "Pixel histograms")
 
         return f"""
 <h1>Filter Image Comparison Report</h1>
@@ -188,26 +216,82 @@ class ReportBuilder:
   <div style="flex:1;">
     <h3>{img_a.label}</h3>
     {thumb_a}
+    {thumb_sl_a}{sl_cap_a}
     <table><tbody>{meta_rows(img_a, result_a)}</tbody></table>
   </div>
   <div style="flex:1;">
     <h3>{img_b.label}</h3>
     {thumb_b}
+    {thumb_sl_b}{sl_cap_b}
     <table><tbody>{meta_rows(img_b, result_b)}</tbody></table>
   </div>
-</div>"""
+</div>
+<h3>Pixel Histograms</h3>
+{hist_tag}
+<p class="caption">Log-scale pixel value distributions. Dotted vertical lines mark the median of each image.</p>"""
 
-    def _thumbnail_fig(self, img: AstroImage) -> plt.Figure | None:
-        """Return a small matplotlib figure with a stretched preview of the image."""
-        if img.data is None:
+    def _plot_image_histograms(self, img_a: AstroImage, img_b: AstroImage) -> plt.Figure | None:
+        """Combined log-scale histogram of both images with median markers."""
+        try:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = {"a": "steelblue", "b": "tomato"}
+
+            for img, key, label in [(img_a, "a", img_a.label), (img_b, "b", img_b.label)]:
+                pixels = img.data.ravel().astype(float)
+                positive = pixels[pixels > 0]
+                if len(positive) == 0:
+                    continue
+                lo, hi = np.percentile(positive, [0.01, 99.99])
+                if lo <= 0:
+                    lo = positive.min()
+                if hi <= lo:
+                    hi = lo * 10
+                bins = np.geomspace(lo, hi, 256)
+                counts, edges = np.histogram(positive, bins=bins)
+                centers = np.sqrt(edges[:-1] * edges[1:])
+                color = colors[key]
+                ax.step(centers, counts, where="mid", color=color,
+                        alpha=0.85, linewidth=1.4, label=label)
+                median_val = float(np.median(positive))
+                ax.axvline(median_val, color=color, linestyle=":", linewidth=1.5)
+
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlabel("Pixel value")
+            ax.set_ylabel("Count")
+            ax.set_title("Pixel value histogram")
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.25, which="both")
+            fig.tight_layout()
+            return fig
+        except Exception:
+            return None
+
+    def _thumbnail_fig(self, img: AstroImage,
+                        lo: float | None = None,
+                        hi: float | None = None) -> plt.Figure | None:
+        """Return a small matplotlib figure with a stretched preview of the image.
+
+        If lo/hi are provided, apply a manual linear stretch using those clip limits
+        (used for starless thumbnails so the scale matches the main image).
+        """
+        if img is None or img.data is None:
             return None
         try:
-            arr = img.display_image(stretch=True)
-            # Downsample to max 400px on longest dimension
-            max_dim = max(arr.shape[:2])
-            if max_dim > 400:
-                step = max_dim // 400 + 1
-                arr = arr[::step, ::step]
+            if lo is not None and hi is not None:
+                hi_eff = hi if hi > lo else lo + 1.0
+                arr_f = np.clip((img.data.astype(float) - lo) / (hi_eff - lo), 0.0, 1.0)
+                max_dim = max(arr_f.shape[:2])
+                if max_dim > 400:
+                    step = max_dim // 400 + 1
+                    arr_f = arr_f[::step, ::step]
+                arr = (arr_f * 255).astype(np.uint8)
+            else:
+                arr = img.display_image(stretch=True)
+                max_dim = max(arr.shape[:2])
+                if max_dim > 400:
+                    step = max_dim // 400 + 1
+                    arr = arr[::step, ::step]
             fig, ax = plt.subplots(figsize=(4, 4 * arr.shape[0] / arr.shape[1]))
             ax.imshow(arr, origin="upper", cmap="gray", interpolation="bilinear",
                       aspect="auto")
@@ -302,6 +386,12 @@ tighter stars. Points far from the line indicate individual star measurement sca
 <p class="caption">Empirical PSFs (log scale). Tighter, rounder cores indicate
 better optical quality. Ellipticity &gt; 0.1 may indicate filter tilt or astigmatism.</p>
 
+{_img_tag(self._plot_psf_simulation(ra, rb), "PSF simulation on test chart")}
+<p class="caption">PSF simulation: the ideal test chart (left) convolved with each
+filter's measured ePSF. More blur or contrast loss indicates a broader PSF. The
+difference panel (right) highlights where the two filters diverge — red = brighter
+in A, blue = brighter in B after convolution.</p>
+
 <div class="info-box"><strong>What to look for:</strong> A smaller FWHM and higher
 MTF50 indicate sharper image resolution. A higher Moffat β (steeper wing falloff)
 indicates less scattered light. Ellipticity should be similar between filters;
@@ -370,17 +460,75 @@ large differences may indicate filter flatness issues.</div>"""
         fig.tight_layout()
         return fig
 
+    def _plot_psf_simulation(self, ra: AnalysisResult,
+                              rb: AnalysisResult) -> plt.Figure | None:
+        """Convolve the test chart with each filter's ePSF and show the result."""
+        epsf_a = (ra.psf_metrics or {}).get("epsf_data")
+        epsf_b = (rb.psf_metrics or {}).get("epsf_data")
+        if epsf_a is None or epsf_b is None:
+            return None
+        if not _TEST_IMAGE_PATH.exists():
+            return None
+        try:
+            test_arr = np.array(
+                _PILImage.open(_TEST_IMAGE_PATH).convert("L"), dtype=float
+            ) / 255.0
+
+            os_a = (ra.psf_metrics or {}).get("epsf_oversampling", 2)
+            os_b = (rb.psf_metrics or {}).get("epsf_oversampling", 2)
+            kern_a = _ndimage_zoom(epsf_a, 1.0 / os_a, order=1)
+            kern_b = _ndimage_zoom(epsf_b, 1.0 / os_b, order=1)
+            s_a = kern_a.sum()
+            s_b = kern_b.sum()
+            kern_a = kern_a / s_a if s_a > 0 else kern_a
+            kern_b = kern_b / s_b if s_b > 0 else kern_b
+
+            conv_a = np.clip(fftconvolve(test_arr, kern_a, mode="same"), 0.0, 1.0)
+            conv_b = np.clip(fftconvolve(test_arr, kern_b, mode="same"), 0.0, 1.0)
+            diff = conv_a - conv_b
+
+            fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+            kw = dict(origin="upper", cmap="gray", vmin=0, vmax=1,
+                      interpolation="nearest", aspect="equal")
+            axes[0].imshow(test_arr, **kw)
+            axes[0].set_title("Original test chart", fontsize=9)
+            axes[1].imshow(conv_a, **kw)
+            axes[1].set_title(f"Convolved — PSF {ra.label}", fontsize=9)
+            axes[2].imshow(conv_b, **kw)
+            axes[2].set_title(f"Convolved — PSF {rb.label}", fontsize=9)
+
+            d_max = max(abs(diff.min()), abs(diff.max()), 1e-9)
+            im_d = axes[3].imshow(diff, origin="upper", cmap="RdBu_r",
+                                   vmin=-d_max, vmax=d_max,
+                                   interpolation="nearest", aspect="equal")
+            axes[3].set_title("Difference (A − B)", fontsize=9)
+            plt.colorbar(im_d, ax=axes[3], fraction=0.046, pad=0.04)
+
+            for ax in axes:
+                ax.axis("off")
+            fig.suptitle(
+                "PSF simulation — how each filter's ePSF degrades an ideal test chart",
+                fontsize=10,
+            )
+            fig.tight_layout()
+            return fig
+        except Exception:
+            return None
+
     # ── Section 4: Halo ───────────────────────────────────────────────────────
 
-    def _section_halo(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+    def _section_halo(self, ra: AnalysisResult, rb: AnalysisResult,
+                       img_a: AstroImage, img_b: AstroImage) -> str:
         err = _error_box("halo", ra, rb)
         ha = ra.halo_metrics or {}
         hb = rb.halo_metrics or {}
         ca, cb = _better_worse_class(ha.get("halo_to_core_ratio"),
                                       hb.get("halo_to_core_ratio"),
                                       higher_is_better=False)
-        img_a = _img_tag((ha.get("figures") or {}).get("halo_profile"), f"Halo {ra.label}")
-        img_b = _img_tag((hb.get("figures") or {}).get("halo_profile"), f"Halo {rb.label}")
+        prof_a = _img_tag((ha.get("figures") or {}).get("halo_profile"), f"Halo {ra.label}")
+        prof_b = _img_tag((hb.get("figures") or {}).get("halo_profile"), f"Halo {rb.label}")
+        grid_tag = _img_tag(self._plot_halo_star_grid(ra, rb, img_a, img_b),
+                            "Halo star comparison grid")
 
         return f"""
 <h2>4. Halo Analysis &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
@@ -398,14 +546,119 @@ normalised and valid across different filter bandwidths.</div>
 </table>
 
 <div style="display:flex;gap:10px;">
-  <div style="flex:1;">{img_a}</div>
-  <div style="flex:1;">{img_b}</div>
+  <div style="flex:1;">{prof_a}</div>
+  <div style="flex:1;">{prof_b}</div>
 </div>
 <p class="caption">Radial profiles (semi-log). A steep drop-off indicates a clean
 filter. A raised floor or shoulder beyond ~10 px indicates a halo component.</p>
+
+{grid_tag}
+<p class="caption">Top-ranked halo stars side-by-side (Image A left, Image B right per
+pair). Both cutouts in each pair share the same brightness scale so halo brightness is
+directly comparable. Stars sorted by halo/core ratio (highest first). √ stretch applied
+to reveal faint halo structure. <em>Inferno</em> colormap: bright = high intensity.</p>
+
 <div class="info-box"><strong>Ideal:</strong> Halo/core ratio &lt; 0.05 is excellent;
 &gt; 0.15 indicates significant internal reflection that will reduce contrast on
 bright stars.</div>"""
+
+    def _extract_cutout(self, data: np.ndarray,
+                         xc: float, yc: float, half: int) -> np.ndarray:
+        h, w = data.shape
+        x0 = max(0, int(xc) - half)
+        x1 = min(w, int(xc) + half + 1)
+        y0 = max(0, int(yc) - half)
+        y1 = min(h, int(yc) + half + 1)
+        return data[y0:y1, x0:x1].copy()
+
+    def _plot_halo_star_grid(self, ra: AnalysisResult, rb: AnalysisResult,
+                              img_a: AstroImage, img_b: AstroImage) -> plt.Figure | None:
+        stars_a = (ra.halo_metrics or {}).get("star_data", [])
+        stars_b = (rb.halo_metrics or {}).get("star_data", [])
+        if not stars_a:
+            return None
+
+        top_a = stars_a[:20]
+
+        # Nearest-neighbour match in B within 20 px
+        matched = []
+        if stars_b:
+            xs_b = np.array([s["xc"] for s in stars_b])
+            ys_b = np.array([s["yc"] for s in stars_b])
+            for sa in top_a:
+                dists = np.sqrt((xs_b - sa["xc"]) ** 2 + (ys_b - sa["yc"]) ** 2)
+                idx = int(np.argmin(dists))
+                matched.append((sa, stars_b[idx] if dists[idx] <= 20.0 else None))
+        else:
+            matched = [(sa, None) for sa in top_a]
+
+        if not matched:
+            return None
+
+        bgsub_a = img_a.background_subtracted() if img_a.background is not None else img_a.data
+        bgsub_b = img_b.background_subtracted() if img_b.background is not None else img_b.data
+
+        pairs_per_row = 4
+        n = len(matched)
+        n_rows = (n + pairs_per_row - 1) // pairs_per_row
+        n_cols = pairs_per_row * 2
+
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                  figsize=(n_cols * 2.2, n_rows * 2.8))
+        if n_rows == 1:
+            axes = axes[np.newaxis, :]
+        for ax in axes.flat:
+            ax.axis("off")
+
+        for idx, (sa, sb) in enumerate(matched):
+            row = idx // pairs_per_row
+            col_base = (idx % pairs_per_row) * 2
+
+            r_a = sa.get("halo_radius_px") or HALO_FIT_RADIUS_PX
+            r_b = (sb.get("halo_radius_px") if sb else r_a) or HALO_FIT_RADIUS_PX
+            half = max(int(max(r_a, r_b) * 2.5), HALO_FIT_RADIUS_PX)
+
+            cut_a = self._extract_cutout(bgsub_a, sa["xc"], sa["yc"], half)
+            cut_b = (self._extract_cutout(bgsub_b, sb["xc"], sb["yc"], half)
+                     if sb is not None else np.zeros_like(cut_a))
+
+            # Shared normalisation: both cutouts scaled to same max
+            peak_a = float(np.percentile(cut_a, 99.9)) if cut_a.size > 0 else 1.0
+            peak_b = float(np.percentile(cut_b, 99.9)) if cut_b.size > 0 else 1.0
+            shared_max = max(peak_a, peak_b, 1e-9)
+
+            disp_a = np.sqrt(np.clip(cut_a / shared_max, 0.0, 1.0))
+            disp_b = np.sqrt(np.clip(cut_b / shared_max, 0.0, 1.0))
+
+            ax_a = axes[row, col_base]
+            ax_b = axes[row, col_base + 1]
+
+            ax_a.imshow(disp_a, origin="lower", cmap="inferno",
+                        vmin=0, vmax=1, interpolation="nearest", aspect="equal")
+            h2c_a = sa.get("halo_to_core_ratio")
+            ax_a.set_title(f"#{idx+1} {ra.label}"
+                           + (f"\nh/c={h2c_a:.3f}" if h2c_a is not None else ""),
+                           fontsize=7)
+            ax_a.axis("off")
+
+            ax_b.imshow(disp_b, origin="lower", cmap="inferno",
+                        vmin=0, vmax=1, interpolation="nearest", aspect="equal")
+            if sb is not None:
+                h2c_b = sb.get("halo_to_core_ratio")
+                ax_b.set_title(f"#{idx+1} {rb.label}"
+                               + (f"\nh/c={h2c_b:.3f}" if h2c_b is not None else ""),
+                               fontsize=7)
+            else:
+                ax_b.set_title(f"#{idx+1} {rb.label}\n(no match)", fontsize=7)
+            ax_b.axis("off")
+
+        fig.suptitle(
+            f"Top {n} halo stars — {ra.label} (left) vs {rb.label} (right) "
+            f"per pair  |  shared scale per pair  |  √ stretch",
+            fontsize=9,
+        )
+        fig.tight_layout()
+        return fig
 
     # ── Section 5: Ghost ──────────────────────────────────────────────────────
 
@@ -527,9 +780,20 @@ increase this ratio even with identical optical quality.</div>"""
         img_b = _img_tag((pb.get("figures") or {}).get("power_spectrum"), f"PS {rb.label}")
         img_overlay = _img_tag(self._plot_radial_overlay(ra, rb), "Radial power overlay")
 
+        sl_note = ""
+        used_a = pa.get("used_starless", False)
+        used_b = pb.get("used_starless", False)
+        if used_a or used_b:
+            who = ", ".join(filter(None, [ra.label if used_a else "",
+                                          rb.label if used_b else ""]))
+            sl_note = (f'<div class="info-box">★ Power spectrum for <strong>{who}</strong> '
+                       f'was computed on the starless image to reduce star contamination '
+                       f'of the spatial frequency content.</div>')
+
         return f"""
 <h2>7. Micro-contrast / Power Spectrum &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
 {err}
+{sl_note}
 <div class="info-box">The 2D power spectrum of a star-free nebula region reveals the
 spatial frequency content of the image. All data is divided by the mean signal before
 the FFT, making the result dimensionless and comparable across filters with different
@@ -596,9 +860,20 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
                     out += _img_tag(figs[key], key) + "\n"
             return out
 
+        sl_note = ""
+        used_a = sm.get("used_starless_a", False)
+        used_b = sm.get("used_starless_b", False)
+        if used_a or used_b:
+            who = ", ".join(filter(None, [ra.label if used_a else "",
+                                          rb.label if used_b else ""]))
+            sl_note = (f'<div class="info-box">★ Spatial detail analysis for '
+                       f'<strong>{who}</strong> used the starless image to reduce '
+                       f'star contamination of the spatial frequency maps.</div>')
+
         return f"""
 <h2>8. Spatial Detail Comparison &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
 {err}
+{sl_note}
 <div class="info-box">All maps below are computed on mean-signal-normalised data
 (each image divided by its own mean signal), making them dimensionless and comparable
 across different filter bandwidths. Images are shown side-by-side with a shared

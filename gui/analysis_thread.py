@@ -21,11 +21,16 @@ class AnalysisThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, image_a: AstroImage, image_b: AstroImage,
-                 settings: dict, parent=None):
+                 settings: dict, *,
+                 starless_a: AstroImage | None = None,
+                 starless_b: AstroImage | None = None,
+                 parent=None):
         super().__init__(parent)
         self._image_a = image_a
         self._image_b = image_b
         self._settings = settings
+        self._starless_a = starless_a
+        self._starless_b = starless_b
 
     def run(self) -> None:
         try:
@@ -112,9 +117,13 @@ class AnalysisThread(QThread):
         if metrics.get("power"):
             advance("Computing power spectrum…")
             try:
+                ps_a = self._starless_a or img_a
+                ps_b = self._starless_b or img_b
                 pa = PowerSpectrumAnalyzer()
-                result_a.power_metrics = pa.analyze(img_a, roi=roi)
-                result_b.power_metrics = pa.analyze(img_b, roi=roi)
+                result_a.power_metrics = pa.analyze(ps_a, roi=roi)
+                result_b.power_metrics = pa.analyze(ps_b, roi=roi)
+                result_a.power_metrics["used_starless"] = self._starless_a is not None
+                result_b.power_metrics["used_starless"] = self._starless_b is not None
             except Exception as exc:
                 msg = f"Power spectrum analysis failed: {exc}"
                 result_a.errors["power"] = msg
@@ -123,9 +132,13 @@ class AnalysisThread(QThread):
         if metrics.get("spatial"):
             advance("Running spatial detail analysis…")
             try:
+                sd_a = self._starless_a or img_a
+                sd_b = self._starless_b or img_b
                 wavelet_levels = s.get("wavelet_levels", 4)
                 sda = SpatialDetailAnalyzer()
-                spatial = sda.analyze(img_a, img_b, levels=wavelet_levels)
+                spatial = sda.analyze(sd_a, sd_b, levels=wavelet_levels)
+                spatial["used_starless_a"] = self._starless_a is not None
+                spatial["used_starless_b"] = self._starless_b is not None
                 result_a.spatial_metrics = spatial
                 result_b.spatial_metrics = spatial  # shared reference
             except Exception as exc:

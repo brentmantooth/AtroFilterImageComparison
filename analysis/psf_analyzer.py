@@ -87,6 +87,8 @@ class PSFAnalyzer:
             mtf_nyq = float(np.interp(0.5, freq, mtf))
             result["mtf50_cycles_per_px"] = mtf50
             result["mtf_nyquist"] = mtf_nyq
+            result["epsf_data"] = epsf                       # raw 2D array for convolution
+            result["epsf_oversampling"] = EPSF_OVERSAMPLING  # = 2
             result["figures"] = {
                 "mtf": self._plot_mtf(freq, mtf, mtf50, image.label),
                 "epsf": self._plot_epsf(epsf, image.label),
