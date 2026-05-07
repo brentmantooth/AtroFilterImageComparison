@@ -123,6 +123,22 @@ class MainWindow(QMainWindow):
         self._panel_a.apply_bandwidth_from_field()
         self._panel_b.apply_bandwidth_from_field()
 
+        # Warn if either image has no bandwidth set
+        missing = [img.label for img in (img_a, img_b) if img.bandwidth_nm is None]
+        if missing:
+            answer = QMessageBox.question(
+                self,
+                "Bandwidth not specified",
+                f"No filter bandwidth is set for: {', '.join(missing)}.\n\n"
+                "Edge contrast ratio and power spectrum results are bandwidth-sensitive. "
+                "Proceed without this information?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.No:
+                self._control.set_run_enabled(True)
+                return
+
         # Merge ROI from the window state into settings
         settings["roi"] = self._roi
 

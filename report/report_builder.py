@@ -6,6 +6,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import matplotlib.pyplot as plt
 
 from core.models import AnalysisResult
@@ -109,7 +110,7 @@ class ReportBuilder:
                      abs(bw_a - bw_b) > 0.1)
 
         sections = [
-            self._section_header(image_a, image_b, bw_differ),
+            self._section_header(image_a, image_b, result_a, result_b, bw_differ),
             self._section_observation(result_a, result_b),
             self._section_psf(result_a, result_b),
             self._section_halo(result_a, result_b),
@@ -144,6 +145,7 @@ class ReportBuilder:
     # ── Section 1: Header ─────────────────────────────────────────────────────
 
     def _section_header(self, img_a: AstroImage, img_b: AstroImage,
+                         result_a: AnalysisResult, result_b: AnalysisResult,
                          bw_differ: bool) -> str:
         bw_warn = ""
         if bw_differ:
@@ -155,7 +157,7 @@ class ReportBuilder:
                        f'Metrics marked <span class="metric-label-ok">✓</span> are '
                        f'bandwidth-independent.</div>')
 
-        def meta_rows(img: AstroImage) -> str:
+        def meta_rows(img: AstroImage, result: AnalysisResult) -> str:
             rows = ""
             for key, val in img.meta.items():
                 rows += f"<tr><td><strong>{key}</strong></td><td>{val}</td></tr>"
@@ -168,7 +170,14 @@ class ReportBuilder:
             if img.bandwidth_nm:
                 rows += ("<tr><td><strong>Bandwidth</strong></td>"
                          f"<td>{img.bandwidth_nm:.1f} nm</td></tr>")
+            n_total = (result.psf_metrics or {}).get("n_stars_total")
+            if n_total is not None:
+                rows += (f"<tr><td><strong>Stars detected</strong></td>"
+                         f"<td>{n_total}</td></tr>")
             return rows
+
+        thumb_a = _img_tag(self._thumbnail_fig(img_a), f"Preview {img_a.label}")
+        thumb_b = _img_tag(self._thumbnail_fig(img_b), f"Preview {img_b.label}")
 
         return f"""
 <h1>Filter Image Comparison Report</h1>
@@ -178,13 +187,35 @@ class ReportBuilder:
 <div style="display:flex;gap:20px;">
   <div style="flex:1;">
     <h3>{img_a.label}</h3>
-    <table><tbody>{meta_rows(img_a)}</tbody></table>
+    {thumb_a}
+    <table><tbody>{meta_rows(img_a, result_a)}</tbody></table>
   </div>
   <div style="flex:1;">
     <h3>{img_b.label}</h3>
-    <table><tbody>{meta_rows(img_b)}</tbody></table>
+    {thumb_b}
+    <table><tbody>{meta_rows(img_b, result_b)}</tbody></table>
   </div>
 </div>"""
+
+    def _thumbnail_fig(self, img: AstroImage) -> plt.Figure | None:
+        """Return a small matplotlib figure with a stretched preview of the image."""
+        if img.data is None:
+            return None
+        try:
+            arr = img.display_image(stretch=True)
+            # Downsample to max 400px on longest dimension
+            max_dim = max(arr.shape[:2])
+            if max_dim > 400:
+                step = max_dim // 400 + 1
+                arr = arr[::step, ::step]
+            fig, ax = plt.subplots(figsize=(4, 4 * arr.shape[0] / arr.shape[1]))
+            ax.imshow(arr, origin="upper", cmap="gray", interpolation="bilinear",
+                      aspect="auto")
+            ax.axis("off")
+            fig.tight_layout(pad=0)
+            return fig
+        except Exception:
+            return None
 
     # ── Section 2: Observation context ────────────────────────────────────────
 
@@ -232,6 +263,7 @@ shown in the metadata table above.</div>"""
         img_mtf = _img_tag(fig_mtf, "MTF comparison")
         img_epsf_a = _img_tag((pa.get("figures") or {}).get("epsf"), f"ePSF {ra.label}")
         img_epsf_b = _img_tag((pb.get("figures") or {}).get("epsf"), f"ePSF {rb.label}")
+        img_scatter = _img_tag(self._plot_fwhm_scatter(ra, rb), "FWHM scatter")
 
         return f"""
 <h2>3. PSF / MTF &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
@@ -244,7 +276,8 @@ These metrics are normalised to unit amplitude and are valid regardless of filte
 
 <table>
   <tr><th>Metric</th><th>{ra.label}</th><th>{rb.label}</th></tr>
-  <tr><td>Stars used</td><td>{_val(pa.get("n_stars_used"), "d")}</td><td>{_val(pb.get("n_stars_used"), "d")}</td></tr>
+  <tr><td>Stars in catalog</td><td>{_val(pa.get("n_stars_total"), "d")}</td><td>{_val(pb.get("n_stars_total"), "d")}</td></tr>
+  <tr><td>Stars used for PSF</td><td>{_val(pa.get("n_stars_used"), "d")}</td><td>{_val(pb.get("n_stars_used"), "d")}</td></tr>
   <tr><td>FWHM (px)</td><td class="{ca}">{_val(pa.get("fwhm_px"))}</td><td class="{cb}">{_val(pb.get("fwhm_px"))}</td></tr>
   <tr><td>FWHM (arcsec)</td><td class="{ca}">{_val(pa.get("fwhm_arcsec"))}</td><td class="{cb}">{_val(pb.get("fwhm_arcsec"))}</td></tr>
   <tr><td>Moffat β</td><td>{_val(pa.get("beta"))}</td><td>{_val(pb.get("beta"))}</td></tr>
@@ -257,6 +290,11 @@ These metrics are normalised to unit amplitude and are valid regardless of filte
 <p class="caption">MTF curves for both filters overlaid. Higher curve = better
 contrast preservation at fine scales.</p>
 
+{img_scatter}
+<p class="caption">Per-star FWHM correlation. Points near the slope = 1 line indicate
+consistent star size between filters. Systematic offset reveals which filter produces
+tighter stars. Points far from the line indicate individual star measurement scatter.</p>
+
 <div style="display:flex;gap:10px;">
   <div style="flex:1;">{img_epsf_a}</div>
   <div style="flex:1;">{img_epsf_b}</div>
@@ -268,6 +306,45 @@ better optical quality. Ellipticity &gt; 0.1 may indicate filter tilt or astigma
 MTF50 indicate sharper image resolution. A higher Moffat β (steeper wing falloff)
 indicates less scattered light. Ellipticity should be similar between filters;
 large differences may indicate filter flatness issues.</div>"""
+
+    def _plot_fwhm_scatter(self, ra: AnalysisResult, rb: AnalysisResult) -> plt.Figure | None:
+        """Scatter plot of per-star FWHM_A vs FWHM_B for matched stars."""
+        data_a = (ra.psf_metrics or {}).get("star_data", [])
+        data_b = (rb.psf_metrics or {}).get("star_data", [])
+        if not data_a or not data_b:
+            return None
+
+        # Match by nearest neighbour in image coordinates (valid post-alignment)
+        matched_a, matched_b = [], []
+        pos_b = np.array([[s["x"], s["y"]] for s in data_b])
+        for sa in data_a:
+            dists = np.sqrt((pos_b[:, 0] - sa["x"])**2 + (pos_b[:, 1] - sa["y"])**2)
+            idx = int(np.argmin(dists))
+            if dists[idx] < 15.0:
+                matched_a.append(sa["fwhm"])
+                matched_b.append(data_b[idx]["fwhm"])
+
+        if len(matched_a) < 3:
+            return None
+
+        fa = np.array(matched_a)
+        fb = np.array(matched_b)
+        lo = min(fa.min(), fb.min()) * 0.9
+        hi = max(fa.max(), fb.max()) * 1.1
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.scatter(fa, fb, alpha=0.65, color="steelblue", s=25, zorder=3)
+        ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.2, label="Slope = 1 (equal FWHM)")
+        ax.set_xlabel(f"FWHM {ra.label} (px)")
+        ax.set_ylabel(f"FWHM {rb.label} (px)")
+        ax.set_title(f"Per-star FWHM correlation  (n = {len(fa)} matched stars)")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_aspect("equal")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        return fig
 
     def _overlay_mtf(self, fig_a: plt.Figure, fig_b: plt.Figure,
                       label_a: str, label_b: str) -> plt.Figure:
@@ -344,8 +421,9 @@ bright stars.</div>"""
         def cand_rows(cands, label):
             if not cands:
                 return f"<tr><td colspan='4'>No ghost candidates detected in {label}</td></tr>"
+            top = sorted(cands, key=lambda c: c.get("intensity_ratio", 0), reverse=True)[:25]
             rows = ""
-            for c in cands:
+            for c in top:
                 rows += (f"<tr><td>{c['separation_px']:.1f}</td>"
                          f"<td>{c['dx']:.1f}, {c['dy']:.1f}</td>"
                          f"<td>{c['intensity_ratio']:.4f}</td>"
@@ -360,14 +438,14 @@ between the filter surfaces and the sensor. Unlike halos (which are diffuse),
 ghosts are localised and appear at specific offsets from bright stars.
 The ghost/parent intensity ratio is valid across different bandwidths.</div>
 
-<h3>{ra.label} — {len(cands_a)} candidate(s)</h3>
+<h3>{ra.label} — {len(cands_a)} candidate(s){" &nbsp;<em>(showing top 25 by intensity ratio)</em>" if len(cands_a) > 25 else ""}</h3>
 <table>
   <tr><th>Separation (px)</th><th>Offset (dx, dy)</th><th>Intensity ratio</th><th>Classification</th></tr>
   {cand_rows(cands_a, ra.label)}
 </table>
 {img_a}
 
-<h3>{rb.label} — {len(cands_b)} candidate(s)</h3>
+<h3>{rb.label} — {len(cands_b)} candidate(s){" &nbsp;<em>(showing top 25 by intensity ratio)</em>" if len(cands_b) > 25 else ""}</h3>
 <table>
   <tr><th>Separation (px)</th><th>Offset (dx, dy)</th><th>Intensity ratio</th><th>Classification</th></tr>
   {cand_rows(cands_b, rb.label)}
@@ -414,6 +492,30 @@ quality may show a broader LSF. The edge contrast ratio may differ legitimately
 between bandwidths — a narrower filter rejects more continuum background, which can
 increase this ratio even with identical optical quality.</div>"""
 
+    def _plot_radial_overlay(self, ra: AnalysisResult, rb: AnalysisResult) -> plt.Figure | None:
+        """Overlay both radial power curves on a single axes."""
+        pa = ra.power_metrics or {}
+        pb = rb.power_metrics or {}
+        freq_a = pa.get("freq_axis")
+        rp_a = pa.get("radial_power")
+        freq_b = pb.get("freq_axis")
+        rp_b = pb.get("radial_power")
+        if freq_a is None or rp_a is None or freq_b is None or rp_b is None:
+            return None
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.semilogy(freq_a, rp_a, color="steelblue", linewidth=2, label=ra.label)
+        ax.semilogy(freq_b, rp_b, color="tomato", linewidth=2, label=rb.label)
+        ax.axvline(0.10, color="gray", linestyle="--", linewidth=0.8,
+                   label="Low / mid boundary (0.10 cyc/px)")
+        ax.set_xlabel("Spatial frequency (cycles/pixel)")
+        ax.set_ylabel("Radial power (normalised, log scale)")
+        ax.set_title("Radial power spectrum — overlay")
+        ax.set_xlim(0, 0.5)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3, which="both")
+        fig.tight_layout()
+        return fig
+
     # ── Section 7: Power spectrum ──────────────────────────────────────────────
 
     def _section_power(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
@@ -423,6 +525,7 @@ increase this ratio even with identical optical quality.</div>"""
         ca, cb = _better_worse_class(pa.get("mid_high_ratio"), pb.get("mid_high_ratio"))
         img_a = _img_tag((pa.get("figures") or {}).get("power_spectrum"), f"PS {ra.label}")
         img_b = _img_tag((pb.get("figures") or {}).get("power_spectrum"), f"PS {rb.label}")
+        img_overlay = _img_tag(self._plot_radial_overlay(ra, rb), "Radial power overlay")
 
         return f"""
 <h2>7. Micro-contrast / Power Spectrum &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
@@ -439,6 +542,11 @@ the same target region.</div>
   <tr><th>Metric</th><th>{ra.label}</th><th>{rb.label}</th></tr>
   <tr><td>Mid/high ratio</td><td class="{ca}">{_val(pa.get("mid_high_ratio"), ".4f")}</td><td class="{cb}">{_val(pb.get("mid_high_ratio"), ".4f")}</td></tr>
 </table>
+
+{img_overlay}
+<p class="caption">Radial power spectra overlaid (log scale). Curves that diverge at
+high frequencies indicate one filter preserves more fine-scale spatial detail. The
+dashed line marks the boundary between low (coarse structure) and mid/high frequencies.</p>
 
 <div style="display:flex;gap:10px;">
   <div style="flex:1;">{img_a}</div>

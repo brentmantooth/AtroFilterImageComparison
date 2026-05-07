@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QLabel, QLineEdit, QPushButton, QProgressBar, QFileDialog,
@@ -25,6 +25,11 @@ class AnalysisControlPanel(QWidget):
         super().__init__(parent)
         self._roi: tuple | None = None
         self._build_ui()
+        # Restore last used output directory
+        saved = QSettings("FilterImageComparator", "FilterImageComparator").value(
+            "last_output_dir", "")
+        if saved:
+            self._out_dir.setText(saved)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -190,9 +195,12 @@ class AnalysisControlPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _browse_output(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select output directory")
+        d = QFileDialog.getExistingDirectory(
+            self, "Select output directory", self._out_dir.text())
         if d:
             self._out_dir.setText(d)
+            QSettings("FilterImageComparator", "FilterImageComparator").setValue(
+                "last_output_dir", d)
 
     def _toggle_roi_mode(self, checked: bool) -> None:
         self._roi_btn.setText("Cancel ROI" if checked else "Select ROI…")
@@ -201,4 +209,8 @@ class AnalysisControlPanel(QWidget):
     def _on_run(self) -> None:
         self._run_btn.setEnabled(False)
         self._status_label.setText("Running…")
+        out = self._out_dir.text().strip()
+        if out:
+            QSettings("FilterImageComparator", "FilterImageComparator").setValue(
+                "last_output_dir", out)
         self.run_requested.emit(self.settings())

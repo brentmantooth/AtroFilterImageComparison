@@ -38,6 +38,7 @@ class PSFAnalyzer:
         psf_stars = self._catalog_builder.filter_psf_stars(catalog, image, fwhm_guess)
 
         result: dict = {
+            "n_stars_total": len(catalog),
             "n_stars_used": 0,
             "fwhm_px": None,
             "fwhm_arcsec": None,
@@ -47,6 +48,7 @@ class PSFAnalyzer:
             "mtf50_cycles_per_px": None,
             "mtf_nyquist": None,
             "seeing_dominated": False,
+            "star_data": [],
         }
 
         if len(psf_stars) < 3:
@@ -69,6 +71,8 @@ class PSFAnalyzer:
             "fwhm_arcsec": fwhm_arcsec,
             "beta": median_beta,
             "seeing_dominated": fwhm_arcsec > SEEING_WARN_FWHM_ARCS,
+            "star_data": [{"x": f["x"], "y": f["y"], "fwhm": f["fwhm"]}
+                          for f in moffat_fits],
         })
 
         # Ellipticity from image moments
@@ -131,7 +135,7 @@ class PSFAnalyzer:
             fwhm = _moffat_fwhm(gamma, alpha)
             if fwhm < 0.5 or fwhm > CUTOUT_SIZE:
                 continue
-            results.append({"fwhm": fwhm, "alpha": alpha, "gamma": gamma})
+            results.append({"x": xc, "y": yc, "fwhm": fwhm, "alpha": alpha, "gamma": gamma})
 
         return results
 

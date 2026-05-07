@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QRect, QPoint, QSettings, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
@@ -199,13 +199,16 @@ class ImagePanel(QWidget):
         self._img_label.set_roi_mode(enabled)
 
     def _open_file(self) -> None:
+        settings = QSettings("FilterImageComparator", "FilterImageComparator")
+        last_dir = settings.value("last_data_dir", "")
         path, _ = QFileDialog.getOpenFileName(
             self, "Open image",
-            "",
+            last_dir,
             "Astronomical images (*.fits *.fit *.fts *.xisf);;All files (*.*)",
         )
         if not path:
             return
+        settings.setValue("last_data_dir", str(Path(path).parent))
         img = AstroImage(path)
         try:
             img.load()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib
+import matplotlib.colors as mcolors
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.ndimage import generic_filter, gaussian_laplace, zoom
@@ -137,6 +138,7 @@ class SpatialDetailAnalyzer:
                 f"Local σ — kernel {ks}px — {label_b}",
                 diff_title=f"Diff (A−B), kernel {ks}px",
                 cmap="viridis",
+                nonlinear_norm=True,
             )
             figures[f"std_{ks}px"] = fig
 
@@ -191,6 +193,7 @@ class SpatialDetailAnalyzer:
                 f"|LoG| σ={sigma}px — {label_b}",
                 diff_title=f"LoG diff (A−B), σ={sigma}px",
                 cmap="hot",
+                nonlinear_norm=True,
             )
             figures[f"log_sigma{sigma}"] = fig
         return figures
@@ -282,10 +285,14 @@ class SpatialDetailAnalyzer:
                             title_a: str, title_b: str,
                             diff_title: str = "",
                             cmap: str = "viridis",
-                            symmetric_diff: bool = False) -> plt.Figure:
-        # Shared color scale
-        vmin = min(arr_a.min(), arr_b.min())
+                            symmetric_diff: bool = False,
+                            nonlinear_norm: bool = False) -> plt.Figure:
+        # Shared color scale across both image panels
+        vmin = max(0.0, min(arr_a.min(), arr_b.min()))
         vmax = max(arr_a.max(), arr_b.max())
+
+        # Sqrt (PowerNorm gamma=0.5) compresses bright stars, reveals faint nebula
+        norm = mcolors.PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) if nonlinear_norm else None
 
         diff = arr_a[:min(arr_a.shape[0], arr_b.shape[0]),
                       :min(arr_a.shape[1], arr_b.shape[1])] - \
@@ -301,8 +308,10 @@ class SpatialDetailAnalyzer:
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
         for ax, arr, title in zip(axes[:2], [arr_a, arr_b], [title_a, title_b]):
             im = ax.imshow(arr, origin="lower", cmap=cmap,
-                           vmin=vmin, vmax=vmax, interpolation="nearest",
-                           aspect="auto")
+                           norm=norm if norm is not None else None,
+                           vmin=None if norm is not None else vmin,
+                           vmax=None if norm is not None else vmax,
+                           interpolation="nearest", aspect="auto")
             ax.set_title(title, fontsize=9)
             ax.axis("off")
             plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)

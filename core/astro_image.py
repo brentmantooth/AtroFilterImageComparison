@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 from astropy.nddata import NDData, StdDevUncertainty
-from photutils.background import Background2D, SExtractorBackground, MedianBackground
+from photutils.background import Background2D, SExtractorBackground, MADStdBackgroundRMS
 
 from core.models import DEFAULT_PIXEL_SCALE
 
@@ -29,28 +29,16 @@ def _dtype_label(dtype: np.dtype) -> str:
     return _DTYPE_LABELS.get(dtype.name, str(dtype))
 
 
-def statistical_stretch(data: np.ndarray,
-                         blackpoint_sigma: float = 5.0,
-                         target_median: float = 0.25) -> np.ndarray:
-    """SETIAstroSuite MTF-based statistical stretch for display only."""
-    median = np.median(data)
-    lower = data[data < median]
-    if lower.size == 0:
-        return np.clip(data, 0, 1)
-    mad = np.median(np.abs(lower - median))
-    blackpoint = max(0.0, float(median) - blackpoint_sigma * 1.4826 * float(mad))
+def asinh_stretch(data: np.ndarray, softening: float = 0.1) -> np.ndarray:
+    """Asinh stretch for display: clips to 0.1–99.9% range then applies arcsinh compression.
 
-    denom = 1.0 - blackpoint
-    if denom <= 0:
-        return np.clip(data, 0, 1)
-    r = np.clip((data - blackpoint) / denom, 0.0, 1.0)
-
-    m = target_median
-    t = 0.5
-    denom2 = m * (t + r - 1.0) - t * r
-    # Guard against division by zero
-    safe = np.abs(denom2) > 1e-12
-    out = np.where(safe, ((m - 1.0) * t * r) / np.where(safe, denom2, 1.0), r)
+    softening controls the knee of the curve — smaller values = more aggressive stretch.
+    """
+    lo, hi = np.percentile(data, [0.1, 99.9])
+    if hi <= lo:
+        hi = lo + 1.0
+    x = np.clip((data - lo) / (hi - lo), 0.0, 1.0)
+    out = np.arcsinh(x / softening) / np.arcsinh(1.0 / softening)
     return np.clip(out, 0.0, 1.0)
 
 
@@ -218,7 +206,7 @@ class AstroImage:
                 box_size=box_size,
                 filter_size=3,
                 bkg_estimator=SExtractorBackground(),
-                bkgrms_estimator=MedianBackground(),
+                bkgrms_estimator=MADStdBackgroundRMS(),
             )
         self.background_rms = self.background.background_rms
 
@@ -252,19 +240,16 @@ class AstroImage:
     # Display stretch
     # ------------------------------------------------------------------
 
-    def display_image(self,
-                      stretch: bool = True,
-                      blackpoint_sigma: float = 5.0,
-                      target_median: float = 0.25) -> np.ndarray:
+    def display_image(self, stretch: bool = True) -> np.ndarray:
         """Return uint8 array suitable for Qt display.
 
-        stretch=True  — SETIAstroSuite statistical stretch (default)
-        stretch=False — percentile-clipped linear scale (0.1%–99.9%)
+        stretch=True  — asinh nonlinear stretch (default, dramatic)
+        stretch=False — linear 0.1–99.9% percentile clip (moderate)
         """
         if self.data is None:
             raise RuntimeError("Image not loaded")
         if stretch:
-            scaled = statistical_stretch(self.data, blackpoint_sigma, target_median)
+            scaled = asinh_stretch(self.data)
         else:
             lo, hi = np.percentile(self.data, [0.1, 99.9])
             if hi <= lo:
