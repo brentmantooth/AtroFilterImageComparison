@@ -71,6 +71,22 @@ def _img_tag(fig: plt.Figure, alt: str = "") -> str:
     return f'<img src="data:image/png;base64,{_fig_to_b64(fig)}" alt="{alt}">'
 
 
+def _arr_to_b64_png(arr: np.ndarray) -> str:
+    """Convert a uint8 H×W (gray) or H×W×3 (RGB) array to base64 PNG at native resolution."""
+    if arr.ndim == 2:
+        img = _PILImage.fromarray(arr, mode="L")
+    else:
+        img = _PILImage.fromarray(arr, mode="RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _arr_img_tag(arr: np.ndarray, alt: str = "") -> str:
+    """Inline <img> at native (1:1) pixel resolution from a uint8 numpy array."""
+    return f'<img src="data:image/png;base64,{_arr_to_b64_png(arr)}" alt="{alt}" style="max-width:100%;display:block;">'
+
+
 def _val(v, fmt=".3f", fallback="—") -> str:
     if v is None:
         return fallback
@@ -386,11 +402,7 @@ tighter stars. Points far from the line indicate individual star measurement sca
 <p class="caption">Empirical PSFs (log scale). Tighter, rounder cores indicate
 better optical quality. Ellipticity &gt; 0.1 may indicate filter tilt or astigmatism.</p>
 
-{_img_tag(self._plot_psf_simulation(ra, rb), "PSF simulation on test chart")}
-<p class="caption">PSF simulation: the ideal test chart (left) convolved with each
-filter's measured ePSF. More blur or contrast loss indicates a broader PSF. The
-difference panel (right) highlights where the two filters diverge — red = brighter
-in A, blue = brighter in B after convolution.</p>
+{self._psf_simulation_html(ra, rb)}
 
 <div class="info-box"><strong>What to look for:</strong> A smaller FWHM and higher
 MTF50 indicate sharper image resolution. A higher Moffat β (steeper wing falloff)
@@ -461,8 +473,13 @@ large differences may indicate filter flatness issues.</div>"""
         return fig
 
     def _plot_psf_simulation(self, ra: AnalysisResult,
-                              rb: AnalysisResult) -> plt.Figure | None:
-        """Convolve the test chart with each filter's ePSF and show the result."""
+                              rb: AnalysisResult) -> dict | None:
+        """Convolve the test chart with each filter's ePSF.
+
+        Returns a dict with uint8 numpy arrays (one per panel) at native pixel
+        resolution, or None if unavailable.  Keys: 'original', 'conv_a', 'conv_b',
+        'diff', 'diff_max', 'label_a', 'label_b'.
+        """
         epsf_a = (ra.psf_metrics or {}).get("epsf_data")
         epsf_b = (rb.psf_metrics or {}).get("epsf_data")
         if epsf_a is None or epsf_b is None:
@@ -478,42 +495,64 @@ large differences may indicate filter flatness issues.</div>"""
             os_b = (rb.psf_metrics or {}).get("epsf_oversampling", 2)
             kern_a = _ndimage_zoom(epsf_a, 1.0 / os_a, order=1)
             kern_b = _ndimage_zoom(epsf_b, 1.0 / os_b, order=1)
-            s_a = kern_a.sum()
-            s_b = kern_b.sum()
-            kern_a = kern_a / s_a if s_a > 0 else kern_a
-            kern_b = kern_b / s_b if s_b > 0 else kern_b
+            kern_a = kern_a / kern_a.sum() if kern_a.sum() > 0 else kern_a
+            kern_b = kern_b / kern_b.sum() if kern_b.sum() > 0 else kern_b
 
+            # Convolution at full resolution
             conv_a = np.clip(fftconvolve(test_arr, kern_a, mode="same"), 0.0, 1.0)
             conv_b = np.clip(fftconvolve(test_arr, kern_b, mode="same"), 0.0, 1.0)
             diff = conv_a - conv_b
 
-            fig, axes = plt.subplots(1, 4, figsize=(20, 5))
-            kw = dict(origin="upper", cmap="gray", vmin=0, vmax=1,
-                      interpolation="nearest", aspect="equal")
-            axes[0].imshow(test_arr, **kw)
-            axes[0].set_title("Original test chart", fontsize=9)
-            axes[1].imshow(conv_a, **kw)
-            axes[1].set_title(f"Convolved — PSF {ra.label}", fontsize=9)
-            axes[2].imshow(conv_b, **kw)
-            axes[2].set_title(f"Convolved — PSF {rb.label}", fontsize=9)
+            # Downsample for display if image is very large (cap at 1200 px on long edge)
+            h, w = test_arr.shape
+            if max(h, w) > 1200:
+                zoom_f = 1200.0 / max(h, w)
+                test_arr = _ndimage_zoom(test_arr, zoom_f, order=1)
+                conv_a   = _ndimage_zoom(conv_a,   zoom_f, order=1)
+                conv_b   = _ndimage_zoom(conv_b,   zoom_f, order=1)
+                diff     = _ndimage_zoom(diff,     zoom_f, order=1)
 
-            d_max = max(abs(diff.min()), abs(diff.max()), 1e-9)
-            im_d = axes[3].imshow(diff, origin="upper", cmap="RdBu_r",
-                                   vmin=-d_max, vmax=d_max,
-                                   interpolation="nearest", aspect="equal")
-            axes[3].set_title("Difference (A − B)", fontsize=9)
-            plt.colorbar(im_d, ax=axes[3], fraction=0.046, pad=0.04)
+            d_max = max(float(abs(diff).max()), 1e-9)
+            # Map diff to RGB using RdBu_r colormap
+            diff_norm = (diff / d_max + 1.0) / 2.0          # [0, 1]
+            diff_rgb = (plt.get_cmap("RdBu_r")(diff_norm)[:, :, :3] * 255).astype(np.uint8)
 
-            for ax in axes:
-                ax.axis("off")
-            fig.suptitle(
-                "PSF simulation — how each filter's ePSF degrades an ideal test chart",
-                fontsize=10,
-            )
-            fig.tight_layout()
-            return fig
+            return {
+                "original": (test_arr * 255).astype(np.uint8),
+                "conv_a":   (conv_a   * 255).astype(np.uint8),
+                "conv_b":   (conv_b   * 255).astype(np.uint8),
+                "diff":     diff_rgb,
+                "diff_max": d_max,
+                "label_a":  ra.label,
+                "label_b":  rb.label,
+            }
         except Exception:
             return None
+
+    def _psf_simulation_html(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+        """Return HTML block with four PSF simulation panels at 1:1 pixel resolution."""
+        sim = self._plot_psf_simulation(ra, rb)
+        if sim is None:
+            return ""
+
+        def panel(arr, title, caption=""):
+            tag = _arr_img_tag(arr, title)
+            cap = f'<p class="caption">{caption}</p>' if caption else ""
+            return f'<div style="margin-bottom:20px;"><p><strong>{title}</strong></p>{tag}{cap}</div>'
+
+        diff_caption = (
+            f"Pixel-level difference A − B (RdBu_r colormap, range ±{sim['diff_max']:.4f}). "
+            "Red = A brighter after convolution; blue = B brighter. "
+            "Larger values in fine-detail regions indicate a measurable sharpness difference."
+        )
+        return f"""
+<h3>PSF Simulation — test chart convolved at native pixel resolution</h3>
+<p>Each image is rendered at 1 image-pixel : 1 screen-pixel so fine detail differences
+are fully visible. Brighter, higher-contrast features indicate a tighter PSF.</p>
+{panel(sim['original'], 'Original test chart')}
+{panel(sim['conv_a'],   f"Convolved — {sim['label_a']}")}
+{panel(sim['conv_b'],   f"Convolved — {sim['label_b']}")}
+{panel(sim['diff'],     'Difference (A − B)', diff_caption)}"""
 
     # ── Section 4: Halo ───────────────────────────────────────────────────────
 
@@ -622,13 +661,20 @@ bright stars.</div>"""
             cut_b = (self._extract_cutout(bgsub_b, sb["xc"], sb["yc"], half)
                      if sb is not None else np.zeros_like(cut_a))
 
-            # Shared normalisation: both cutouts scaled to same max
+            # Shared normalisation: scale to 99.9th-pct peak so core clips, halos visible
             peak_a = float(np.percentile(cut_a, 99.9)) if cut_a.size > 0 else 1.0
             peak_b = float(np.percentile(cut_b, 99.9)) if cut_b.size > 0 else 1.0
             shared_max = max(peak_a, peak_b, 1e-9)
 
-            disp_a = np.sqrt(np.clip(cut_a / shared_max, 0.0, 1.0))
-            disp_b = np.sqrt(np.clip(cut_b / shared_max, 0.0, 1.0))
+            # Asinh stretch: softening=0.05 boosts faint halo emission (1-20% of peak)
+            # to 30-70% of the display range, while the saturated core clips cleanly.
+            _soft = 0.05
+            _norm = np.arcsinh(1.0 / _soft)
+            def _asinh(arr):
+                return np.arcsinh(np.clip(arr / shared_max, 0.0, None) / _soft) / _norm
+
+            disp_a = np.clip(_asinh(cut_a), 0.0, 1.0)
+            disp_b = np.clip(_asinh(cut_b), 0.0, 1.0)
 
             ax_a = axes[row, col_base]
             ax_b = axes[row, col_base + 1]
@@ -654,7 +700,7 @@ bright stars.</div>"""
 
         fig.suptitle(
             f"Top {n} halo stars — {ra.label} (left) vs {rb.label} (right) "
-            f"per pair  |  shared scale per pair  |  √ stretch",
+            f"per pair  |  shared scale per pair  |  asinh stretch (softening=0.05)",
             fontsize=9,
         )
         fig.tight_layout()
@@ -720,9 +766,20 @@ The ghost/parent intensity ratio is valid across different bandwidths.</div>
         img_a = _img_tag((ea.get("figures") or {}).get("edge"), f"Edge {ra.label}")
         img_b = _img_tag((eb.get("figures") or {}).get("edge"), f"Edge {rb.label}")
 
+        used_sl_a = ea.get("used_starless", False)
+        used_sl_b = eb.get("used_starless", False)
+        sl_note = ""
+        if used_sl_a or used_sl_b:
+            who = ", ".join(filter(None, [ra.label if used_sl_a else "",
+                                          rb.label if used_sl_b else ""]))
+            sl_note = (f'<div class="info-box">★ Edge analysis for <strong>{who}</strong> '
+                       f'used the starless image so the strongest gradient search locates '
+                       f'a nebula emission boundary rather than a star profile.</div>')
+
         return f"""
 <h2>6. Local Contrast / Edge Analysis</h2>
 {err}
+{sl_note}
 <div class="info-box">The Edge Spread Function (ESF) is extracted across a nebula
 emission boundary. Its derivative is the Line Spread Function (LSF). The 10–90%
 edge width measures how sharply the transition is rendered — a smaller value indicates

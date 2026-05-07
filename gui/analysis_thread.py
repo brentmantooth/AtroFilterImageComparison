@@ -107,8 +107,19 @@ class AnalysisThread(QThread):
             advance("Extracting edge spread function…")
             try:
                 ea = EdgeAnalyzer()
-                result_a.edge_metrics = ea.analyze(img_a, roi=roi)
-                result_b.edge_metrics = ea.analyze(img_b, roi=roi)
+                # Use starless image if available — removes stars from the strongest
+                # gradient search so the auto-ROI lands on a nebula boundary, not a star.
+                ea_src_a = self._starless_a or img_a
+                ea_src_b = self._starless_b or img_b
+                # Carry the original pixel scale so arcsec conversion is correct.
+                if self._starless_a is not None:
+                    self._starless_a.pixel_scale = img_a.pixel_scale
+                if self._starless_b is not None:
+                    self._starless_b.pixel_scale = img_b.pixel_scale
+                result_a.edge_metrics = ea.analyze(ea_src_a, roi=roi)
+                result_b.edge_metrics = ea.analyze(ea_src_b, roi=roi)
+                result_a.edge_metrics["used_starless"] = self._starless_a is not None
+                result_b.edge_metrics["used_starless"] = self._starless_b is not None
             except Exception as exc:
                 msg = f"Edge analysis failed: {exc}"
                 result_a.errors["edge"] = msg

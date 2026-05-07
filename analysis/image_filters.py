@@ -287,9 +287,12 @@ class SpatialDetailAnalyzer:
                             cmap: str = "viridis",
                             symmetric_diff: bool = False,
                             nonlinear_norm: bool = False) -> plt.Figure:
-        # Shared color scale across both image panels
-        vmin = max(0.0, min(arr_a.min(), arr_b.min()))
-        vmax = max(arr_a.max(), arr_b.max())
+        # Shared color scale: use percentile clipping to prevent bright outliers
+        # (stars, hot pixels) from compressing the interesting nebula detail range.
+        vmin = max(0.0, float(min(np.percentile(arr_a, 0.5), np.percentile(arr_b, 0.5))))
+        vmax = float(max(np.percentile(arr_a, 99.5), np.percentile(arr_b, 99.5)))
+        if vmax <= vmin:
+            vmax = vmin + 1e-9
 
         # Sqrt (PowerNorm gamma=0.5) compresses bright stars, reveals faint nebula
         norm = mcolors.PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) if nonlinear_norm else None
@@ -300,10 +303,12 @@ class SpatialDetailAnalyzer:
                       :min(arr_a.shape[1], arr_b.shape[1])]
 
         if symmetric_diff:
-            d_max = max(abs(diff.min()), abs(diff.max())) or 1.0
+            # Percentile-based symmetric scale so sparse large-diff pixels don't crush detail
+            d_max = float(np.percentile(np.abs(diff), 99.5)) or 1.0
             dvmin, dvmax = -d_max, d_max
         else:
-            dvmin, dvmax = diff.min(), diff.max()
+            dvmin = float(np.percentile(diff, 0.5))
+            dvmax = float(np.percentile(diff, 99.5))
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
         for ax, arr, title in zip(axes[:2], [arr_a, arr_b], [title_a, title_b]):
