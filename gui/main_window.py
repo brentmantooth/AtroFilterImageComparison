@@ -156,6 +156,22 @@ class MainWindow(QMainWindow):
                 self._control.set_run_enabled(True)
                 return
 
+        # Warn if no cross-section line has been drawn
+        if self._crosshair is None:
+            answer = QMessageBox.question(
+                self, "No cross-section line selected",
+                "No cross-section line has been drawn on the images.\n\n"
+                "Without a cross-section:\n"
+                "  • Spatial Detail section will show maps only — no profile overlays\n"
+                "  • Edge Analysis will auto-detect the strongest gradient\n\n"
+                "Proceed without a cross-section line?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._control.set_run_enabled(True)
+                return
+
         # Merge ROI and crosshair from window state into settings
         settings["roi"] = self._roi
         settings["crosshair"] = self._crosshair
@@ -184,6 +200,8 @@ class MainWindow(QMainWindow):
         msg = "Analysis complete."
         if report_path:
             msg += f"\nReport saved to:\n{report_path}"
+        if result_a.warnings:
+            msg += "\n\nWarnings:\n" + "\n".join(f"• {w[:200]}" for w in result_a.warnings)
         QMessageBox.information(self, "Done", msg)
 
     def _on_error(self, msg: str) -> None:

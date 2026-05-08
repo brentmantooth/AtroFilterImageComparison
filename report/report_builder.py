@@ -644,10 +644,11 @@ bright stars.</div>"""
         bgsub_a = img_a.background_subtracted() if img_a.background is not None else img_a.data
         bgsub_b = img_b.background_subtracted() if img_b.background is not None else img_b.data
 
-        pairs_per_row = 4
         n = len(matched)
+        pairs_per_row = min(3, n)
+        cols_per_pair = 3   # img A | img B | cross-section
         n_rows = (n + pairs_per_row - 1) // pairs_per_row
-        n_cols = pairs_per_row * 2
+        n_cols = pairs_per_row * cols_per_pair
 
         fig, axes = plt.subplots(n_rows, n_cols,
                                   figsize=(n_cols * 2.2, n_rows * 2.8))
@@ -658,7 +659,7 @@ bright stars.</div>"""
 
         for idx, (sa, sb) in enumerate(matched):
             row = idx // pairs_per_row
-            col_base = (idx % pairs_per_row) * 2
+            col_base = (idx % pairs_per_row) * cols_per_pair
 
             r_a = sa.get("halo_radius_px") or HALO_FIT_RADIUS_PX
             r_b = (sb.get("halo_radius_px") if sb else r_a) or HALO_FIT_RADIUS_PX
@@ -685,6 +686,7 @@ bright stars.</div>"""
 
             ax_a = axes[row, col_base]
             ax_b = axes[row, col_base + 1]
+            ax_xs = axes[row, col_base + 2]
 
             ax_a.imshow(disp_a, origin="lower", cmap="turbo",
                         vmin=0, vmax=1, interpolation="nearest", aspect="equal")
@@ -704,6 +706,26 @@ bright stars.</div>"""
             else:
                 ax_b.set_title(f"#{idx+1} {rb.label}\n(no match)", fontsize=7)
             ax_b.axis("off")
+
+            # Horizontal cross-section through the star centre — log y-axis
+            if cut_a.shape[0] > 0 and cut_a.shape[1] > 0:
+                mid_row = cut_a.shape[0] // 2
+                px_offset = np.arange(cut_a.shape[1]) - cut_a.shape[1] // 2
+                noise_floor = shared_max * 1e-4
+                xs_a = np.maximum(cut_a[mid_row, :], noise_floor)
+                xs_b_vals = (np.maximum(cut_b[mid_row, :], noise_floor)
+                             if sb is not None else None)
+                ax_xs.semilogy(px_offset, xs_a, color="steelblue",
+                               linewidth=1.0, label=ra.label)
+                if xs_b_vals is not None:
+                    ax_xs.semilogy(px_offset, xs_b_vals, color="tomato",
+                                   linewidth=1.0, label=rb.label)
+                ax_xs.set_title(f"#{idx+1} cross-section", fontsize=7)
+                ax_xs.set_xlabel("px from centre", fontsize=6)
+                ax_xs.tick_params(labelsize=6)
+                ax_xs.legend(fontsize=6)
+                ax_xs.grid(True, alpha=0.25, which="both")
+                ax_xs.axis("on")
 
         fig.suptitle(
             f"Top {n} halo stars — {ra.label} (left) vs {rb.label} (right) "

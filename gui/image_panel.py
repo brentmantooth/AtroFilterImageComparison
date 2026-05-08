@@ -36,6 +36,7 @@ class ZoomableImageLabel(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(300, 300)
+        self.setMouseTracking(True)
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._origin = QPoint()
         self._pixmap_orig: QPixmap | None = None
