@@ -82,13 +82,17 @@ class AstroImage:
                     self.header = hdu.header.copy()
                     return
                 if d.ndim == 3:
-                    # FITS stores color as (C, H, W) after numpy transposition
-                    if d.shape[0] >= 3:
+                    header = hdu.header
+                    # Require explicit header evidence before treating as RGB.
+                    # Monochrome FITS files can be 3D (e.g. multiple integration planes).
+                    colortyp = str(header.get("COLORTYP", "")).upper()
+                    is_rgb = ("RGB" in colortyp) or ("BAYERPAT" in header)
+                    if is_rgb and d.shape[0] >= 3:
                         self.data = (0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2]).copy()
+                        self.is_color = True
                     else:
                         self.data = d[0].copy()
-                    self.header = hdu.header.copy()
-                    self.is_color = True
+                    self.header = header.copy()
                     return
         raise ValueError(f"No valid image data found in {self.path.name}")
 
@@ -98,19 +102,28 @@ class AstroImage:
         except ImportError:
             raise ImportError("xisf package not installed. Run: pip install xisf")
         x = xisf_lib.XISF(str(self.path))
+        # Check colorSpace metadata before reading pixel data
+        is_rgb = False
+        try:
+            meta_list = x.get_images_metadata()
+        except Exception:
+            meta_list = []
+        if meta_list:
+            cs = str(meta_list[0].get("colorSpace", "Gray")).upper()
+            is_rgb = "RGB" in cs
+
         img = x.read_image(0)
         if img is None:
             raise ValueError(f"No image data in {self.path.name}")
-        # xisf returns (H, W) or (H, W, C); convert colour to luminance
+        # xisf returns (H, W) or (H, W, C)
         if img.ndim == 3:
-            if img.shape[2] >= 3:
+            if is_rgb and img.shape[2] >= 3:
                 img = 0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]
+                self.is_color = True
             else:
                 img = img[:, :, 0]
-            self.is_color = True
         self.data = img   # float64 conversion happens in load() after dtype is captured
         # Build a minimal header-like dict from XISF metadata
-        meta_list = x.get_images_metadata()
         if meta_list:
             self.header = fits.Header()
             raw = meta_list[0]
