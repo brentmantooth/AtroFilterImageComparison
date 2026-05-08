@@ -924,6 +924,20 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
                     out += _hires_img_tag(figs[key], key) + "\n"
             return out
 
+        def xs_figs_for(prefix: str) -> str:
+            out = ""
+            for key in sorted(figs):
+                if key.startswith(prefix):
+                    out += _hires_img_tag(figs[key], key) + "\n"
+            return out
+
+        has_crosshair = sm.get("crosshair") is not None
+        xs_note = (
+            '<div class="info-box">ℹ Cross-section profiles below are extracted along '
+            'the line selected in the viewer. Left axis: both images '
+            '(steelblue = A, tomato = B). Right axis (green dashed): difference A−B.</div>'
+        ) if has_crosshair else ""
+
         sl_note = ""
         used_a = sm.get("used_starless_a", False)
         used_b = sm.get("used_starless_b", False)
@@ -963,7 +977,7 @@ a higher ratio indicates better differentiation of nebula structure from backgro
 {figs_for("std_")}
 <p class="caption">Side-by-side local σ maps at each kernel size (shared colour scale).
 The difference map (right) highlights where one filter preserves more local variation.</p>
-
+{xs_note}{xs_figs_for("xs_std_")}
 <h3>8b. Laplacian of Gaussian (LoG) Maps</h3>
 <div class="info-box">The Laplacian of Gaussian highlights regions of rapid intensity
 change at a specific spatial scale (controlled by σ). Brighter regions in |LoG| maps
@@ -972,7 +986,7 @@ Smaller σ highlights finer features; larger σ highlights broader structures.</
 {figs_for("log_")}
 <p class="caption">|LoG| maps at σ = 1.5, 3, and 6 px (shared colour scale per row).
 A filter preserving more fine detail shows brighter, more defined boundaries at small σ.</p>
-
+{xs_figs_for("xs_log_")}
 <h3>8c. Wavelet Decomposition</h3>
 <div class="info-box">A 4-level Daubechies-4 wavelet decomposition separates the
 image into spatial scale bands. Level 1 (~2 px) is noise-dominated and used only
@@ -994,7 +1008,8 @@ Estimated noise (σ): <strong>{ra.label}</strong> = {sigma_a},
 {figs_for("wavelet_level")}
 <p class="caption">Reconstructed detail images at levels 2 and 3 (shared colour scale,
 diverging colourmap). The difference panel (right) shows where fine structure differs
-between the two filters.</p>"""
+between the two filters.</p>
+{xs_figs_for("xs_wavelet_level")}"""
 
     # ── Section 9: Summary ────────────────────────────────────────────────────
 

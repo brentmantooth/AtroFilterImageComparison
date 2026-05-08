@@ -20,10 +20,12 @@ class AnalysisControlPanel(QWidget):
 
     run_requested = pyqtSignal(dict)   # emits settings dict
     roi_mode_toggled = pyqtSignal(bool)
+    line_mode_toggled = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._roi: tuple | None = None
+        self._line: dict | None = None
         self._build_ui()
         # Restore last used output directory
         saved = QSettings("FilterImageComparator", "FilterImageComparator").value(
@@ -113,6 +115,17 @@ class AnalysisControlPanel(QWidget):
         roi_row.addStretch()
         run_layout.addLayout(roi_row)
 
+        line_row = QHBoxLayout()
+        self._line_btn = QPushButton("Select Line…")
+        self._line_btn.setCheckable(True)
+        self._line_btn.clicked.connect(self._toggle_line_mode)
+        line_row.addWidget(self._line_btn)
+        self._line_label = QLabel("No line — skip cross-section")
+        self._line_label.setStyleSheet("color: #666;")
+        line_row.addWidget(self._line_label)
+        line_row.addStretch()
+        run_layout.addLayout(line_row)
+
         align_row = QHBoxLayout()
         align_row.addWidget(QLabel("Alignment:"))
         self._align_label = QLabel("Waiting for images…")
@@ -176,6 +189,17 @@ class AnalysisControlPanel(QWidget):
             self._roi_label.setText("No ROI — auto-detect")
             self._roi_label.setStyleSheet("color: #666;")
 
+    def set_line(self, line: dict | None) -> None:
+        self._line = line
+        if line:
+            x0, y0 = line["x0"], line["y0"]
+            x1, y1 = line["x1"], line["y1"]
+            self._line_label.setText(f"Line: ({x0:.3f},{y0:.3f})→({x1:.3f},{y1:.3f})")
+            self._line_label.setStyleSheet("color: #155724;")
+        else:
+            self._line_label.setText("No line — skip cross-section")
+            self._line_label.setStyleSheet("color: #666;")
+
     def update_progress(self, pct: int, message: str = "") -> None:
         self._progress.setVisible(True)
         self._progress.setValue(pct)
@@ -197,6 +221,7 @@ class AnalysisControlPanel(QWidget):
             "pixel_scale_override": pso if pso > 0 else None,
             "wavelet_levels": self._wavelet_levels.value(),
             "roi": self._roi,
+            "crosshair": self._line,
             "output_dir": self._out_dir.text().strip() or str(Path.home() / "filter_reports"),
             "parallel": self._parallel_cb.isChecked(),
         }
@@ -216,6 +241,10 @@ class AnalysisControlPanel(QWidget):
     def _toggle_roi_mode(self, checked: bool) -> None:
         self._roi_btn.setText("Cancel ROI" if checked else "Select ROI…")
         self.roi_mode_toggled.emit(checked)
+
+    def _toggle_line_mode(self, checked: bool) -> None:
+        self._line_btn.setText("Cancel Line" if checked else "Select Line…")
+        self.line_mode_toggled.emit(checked)
 
     def _on_run(self) -> None:
         self._run_btn.setEnabled(False)

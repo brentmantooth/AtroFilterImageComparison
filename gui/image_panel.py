@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import Qt, QRect, QPoint, QSettings, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QGroupBox, QFormLayout, QLineEdit, QFileDialog, QScrollArea,
@@ -29,6 +29,7 @@ class ZoomableImageLabel(QLabel):
     """QLabel that supports rubber-band ROI selection."""
 
     roi_selected = pyqtSignal(int, int, int, int)  # x0, y0, x1, y1 in image coords
+    line_selected = pyqtSignal(float, float, float, float)  # x0n, y0n, x1n, y1n normalised [0,1]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,10 +41,54 @@ class ZoomableImageLabel(QLabel):
         self._pixmap_orig: QPixmap | None = None
         self._display_arr: np.ndarray | None = None   # keeps buffer alive for QImage
         self._roi_mode = False
+        self._line_mode: bool = False
+        self._line_state: str = "idle"  # "idle" | "drawing" | "fixed"
+        self._line_n0: tuple | None = None  # (xn, yn) normalised start
+        self._line_n1: tuple | None = None  # (xn, yn) normalised end
 
     def set_roi_mode(self, enabled: bool) -> None:
         self._roi_mode = enabled
-        self.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor if (enabled or self._line_mode)
+                       else Qt.CursorShape.ArrowCursor)
+
+    def set_line_mode(self, enabled: bool) -> None:
+        self._line_mode = enabled
+        if not enabled and self._line_state == "drawing":
+            self._line_state = "idle"
+            self._line_n0 = None
+            self._line_n1 = None
+        self.setCursor(Qt.CursorShape.CrossCursor if (enabled or self._roi_mode)
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_line_normalised(self, x0n: float, y0n: float,
+                             x1n: float, y1n: float) -> None:
+        self._line_n0 = (x0n, y0n)
+        self._line_n1 = (x1n, y1n)
+        self._line_state = "fixed"
+        self.update()
+
+    def _widget_to_norm(self, pt: QPoint) -> tuple[float, float] | None:
+        if self._pixmap_orig is None or self.pixmap() is None:
+            return None
+        px = self.pixmap()
+        pw, ph = px.width(), px.height()
+        if pw == 0 or ph == 0:
+            return None
+        ox = (self.width() - pw) // 2
+        oy = (self.height() - ph) // 2
+        xn = (pt.x() - ox) / pw
+        yn = (pt.y() - oy) / ph
+        return float(max(0.0, min(1.0, xn))), float(max(0.0, min(1.0, yn)))
+
+    def _norm_to_widget(self, xn: float, yn: float) -> QPoint | None:
+        if self._pixmap_orig is None or self.pixmap() is None:
+            return None
+        px = self.pixmap()
+        pw, ph = px.width(), px.height()
+        ox = (self.width() - pw) // 2
+        oy = (self.height() - ph) // 2
+        return QPoint(int(ox + xn * pw), int(oy + yn * ph))
 
     def set_image_array(self, arr: np.ndarray) -> None:
         arr = _downsample_for_display(arr)
@@ -66,14 +111,52 @@ class ZoomableImageLabel(QLabel):
     def resizeEvent(self, event):
         self._update_display()
         super().resizeEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if (self._line_n0 is not None and self._line_n1 is not None
+                and self._line_state in ("drawing", "fixed")):
+            pt0 = self._norm_to_widget(*self._line_n0)
+            pt1 = self._norm_to_widget(*self._line_n1)
+            if pt0 is not None and pt1 is not None:
+                painter = QPainter(self)
+                pen = QPen(QColor("#17becf"), 2)
+                painter.setPen(pen)
+                painter.drawLine(pt0, pt1)
+                painter.end()
 
     def mousePressEvent(self, event):
+        if self._line_mode and event.button() == Qt.MouseButton.LeftButton:
+            if self._line_state in ("idle", "fixed"):
+                coords = self._widget_to_norm(event.pos())
+                if coords:
+                    self._line_n0 = coords
+                    self._line_n1 = coords
+                self._line_state = "drawing"
+            elif self._line_state == "drawing":
+                coords = self._widget_to_norm(event.pos())
+                if coords:
+                    self._line_n1 = coords
+                self._line_state = "fixed"
+                if self._line_n0 and self._line_n1:
+                    self.line_selected.emit(
+                        self._line_n0[0], self._line_n0[1],
+                        self._line_n1[0], self._line_n1[1])
+            self.update()
+            return
         if self._roi_mode and event.button() == Qt.MouseButton.LeftButton:
             self._origin = event.pos()
             self._rubber_band.setGeometry(QRect(self._origin, self._origin))
             self._rubber_band.show()
 
     def mouseMoveEvent(self, event):
+        if self._line_mode and self._line_state == "drawing":
+            coords = self._widget_to_norm(event.pos())
+            if coords:
+                self._line_n1 = coords
+            self.update()
+            return
         if self._roi_mode and not self._origin.isNull():
             self._rubber_band.setGeometry(
                 QRect(self._origin, event.pos()).normalized())
@@ -117,6 +200,7 @@ class ImagePanel(QWidget):
 
     image_loaded = pyqtSignal(object)   # emits AstroImage
     roi_selected = pyqtSignal(int, int, int, int)
+    line_selected = pyqtSignal(float, float, float, float)
 
     def __init__(self, title: str = "Image", parent=None):
         super().__init__(parent)
@@ -146,6 +230,7 @@ class ImagePanel(QWidget):
         # Image display
         self._img_label = ZoomableImageLabel()
         self._img_label.roi_selected.connect(self.roi_selected)
+        self._img_label.line_selected.connect(self.line_selected)
         layout.addWidget(self._img_label, stretch=1)
 
         # Metadata group — two side-by-side columns to reduce height
@@ -211,6 +296,9 @@ class ImagePanel(QWidget):
 
     def set_roi_mode(self, enabled: bool) -> None:
         self._img_label.set_roi_mode(enabled)
+
+    def set_line_mode(self, enabled: bool) -> None:
+        self._img_label.set_line_mode(enabled)
 
     def _open_file(self) -> None:
         settings = QSettings("FilterImageComparator", "FilterImageComparator")

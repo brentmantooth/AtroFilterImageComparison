@@ -22,6 +22,7 @@ class MainWindow(QMainWindow):
 
         self._thread: AnalysisThread | None = None
         self._roi: tuple | None = None
+        self._crosshair: dict | None = None
 
         self._build_ui()
         self._build_menu()
@@ -55,9 +56,12 @@ class MainWindow(QMainWindow):
         self._panel_b.image_loaded.connect(self._on_image_loaded)
         self._panel_a.roi_selected.connect(self._on_roi_selected)
         self._panel_b.roi_selected.connect(self._on_roi_selected)
+        self._panel_a.line_selected.connect(self._on_line_selected)
+        self._panel_b.line_selected.connect(self._on_line_selected)
 
         self._control.run_requested.connect(self._on_run)
         self._control.roi_mode_toggled.connect(self._on_roi_mode_toggled)
+        self._control.line_mode_toggled.connect(self._on_line_mode_toggled)
 
     def _build_menu(self) -> None:
         mb = self.menuBar()
@@ -110,6 +114,19 @@ class MainWindow(QMainWindow):
         self._control._roi_btn.setChecked(False)
         self._on_roi_mode_toggled(False)
 
+    def _on_line_mode_toggled(self, enabled: bool) -> None:
+        self._panel_a.set_line_mode(enabled)
+        self._panel_b.set_line_mode(enabled)
+
+    def _on_line_selected(self, x0n: float, y0n: float,
+                           x1n: float, y1n: float) -> None:
+        self._crosshair = {"x0": x0n, "y0": y0n, "x1": x1n, "y1": y1n}
+        self._control.set_line(self._crosshair)
+        self._panel_a._img_label.set_line_normalised(x0n, y0n, x1n, y1n)
+        self._panel_b._img_label.set_line_normalised(x0n, y0n, x1n, y1n)
+        self._control._line_btn.setChecked(False)
+        self._on_line_mode_toggled(False)
+
     def _on_run(self, settings: dict) -> None:
         img_a = self._panel_a.image
         img_b = self._panel_b.image
@@ -139,8 +156,9 @@ class MainWindow(QMainWindow):
                 self._control.set_run_enabled(True)
                 return
 
-        # Merge ROI from the window state into settings
+        # Merge ROI and crosshair from window state into settings
         settings["roi"] = self._roi
+        settings["crosshair"] = self._crosshair
 
         self._thread = AnalysisThread(
             img_a, img_b, settings,

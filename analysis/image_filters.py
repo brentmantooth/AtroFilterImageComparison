@@ -5,7 +5,7 @@ import matplotlib
 import matplotlib.colors as mcolors
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy.ndimage import generic_filter, gaussian_filter, gaussian_laplace, zoom
+from scipy.ndimage import generic_filter, gaussian_filter, gaussian_laplace, map_coordinates, zoom
 import pywt
 
 from core.astro_image import AstroImage
@@ -26,7 +26,8 @@ class SpatialDetailAnalyzer:
                 kernel_sizes: tuple = STD_KERNEL_SIZES,
                 log_sigmas: tuple = LOG_SIGMAS,
                 wavelet: str = WAVELET_NAME,
-                levels: int = WAVELET_LEVELS) -> dict:
+                levels: int = WAVELET_LEVELS,
+                crosshair: dict | None = None) -> dict:
 
         image_a.estimate_background()
         image_b.estimate_background()
@@ -65,6 +66,7 @@ class SpatialDetailAnalyzer:
             image_a.label, image_b.label,
             result,
             display_roi=display_roi,
+            crosshair=crosshair,
         )
         figures.update(std_figs)
 
@@ -73,6 +75,7 @@ class SpatialDetailAnalyzer:
             norm_a, norm_b, log_sigmas,
             image_a.label, image_b.label,
             display_roi=display_roi,
+            crosshair=crosshair,
         )
         figures.update(log_figs)
 
@@ -82,9 +85,11 @@ class SpatialDetailAnalyzer:
             image_a.label, image_b.label,
             result,
             display_roi=display_roi,
+            crosshair=crosshair,
         )
         figures.update(wav_figs)
 
+        result["crosshair"] = crosshair
         result["figures"] = figures
         return result
 
@@ -156,7 +161,8 @@ class SpatialDetailAnalyzer:
                        mask_neb_b, mask_bg_b,
                        kernel_sizes, label_a, label_b,
                        result: dict,
-                       display_roi=None) -> dict:
+                       display_roi=None,
+                       crosshair=None) -> dict:
         figures = {}
         for ks in kernel_sizes:
             std_a = self._compute_std_map(norm_a, ks)
@@ -178,6 +184,13 @@ class SpatialDetailAnalyzer:
                 display_roi=display_roi,
             )
             figures[f"std_{ks}px"] = fig
+
+            if crosshair is not None:
+                pos, pa = self._sample_line(std_a, **crosshair)
+                _, pb = self._sample_line(std_b, **crosshair)
+                figures[f"xs_std_{ks}px"] = self._plot_cross_section(
+                    pos, pa, pb, label_a, label_b,
+                    f"Cross-section — Local σ, kernel {ks}px")
 
         return figures
 
@@ -219,7 +232,8 @@ class SpatialDetailAnalyzer:
 
     def _log_analysis(self, norm_a, norm_b, sigmas,
                        label_a, label_b,
-                       display_roi=None) -> dict:
+                       display_roi=None,
+                       crosshair=None) -> dict:
         figures = {}
         for sigma in sigmas:
             log_a = np.abs(gaussian_laplace(norm_a, sigma=sigma))
@@ -234,6 +248,12 @@ class SpatialDetailAnalyzer:
                 display_roi=display_roi,
             )
             figures[f"log_sigma{sigma}"] = fig
+            if crosshair is not None:
+                pos, pa = self._sample_line(log_a, **crosshair)
+                _, pb = self._sample_line(log_b, **crosshair)
+                figures[f"xs_log_sigma{sigma}"] = self._plot_cross_section(
+                    pos, pa, pb, label_a, label_b,
+                    f"Cross-section — |LoG|, σ={sigma}px")
         return figures
 
     # ------------------------------------------------------------------
@@ -242,7 +262,8 @@ class SpatialDetailAnalyzer:
 
     def _wavelet_analysis(self, norm_a, norm_b, wavelet, levels,
                            label_a, label_b, result: dict,
-                           display_roi=None) -> dict:
+                           display_roi=None,
+                           crosshair=None) -> dict:
         figures = {}
 
         coeffs_a = pywt.wavedec2(norm_a, wavelet, level=levels,
@@ -286,6 +307,12 @@ class SpatialDetailAnalyzer:
                 display_roi=display_roi,
             )
             figures[f"wavelet_level{display_level}"] = fig
+            if crosshair is not None:
+                pos, pa = self._sample_line(rec_a, **crosshair)
+                _, pb = self._sample_line(rec_b, **crosshair)
+                figures[f"xs_wavelet_level{display_level}"] = self._plot_cross_section(
+                    pos, pa, pb, label_a, label_b,
+                    f"Cross-section — Wavelet level {display_level}")
 
         return figures
 
@@ -411,4 +438,42 @@ class SpatialDetailAnalyzer:
         ax.legend(fontsize=8)
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
+        return fig
+
+    @staticmethod
+    def _sample_line(arr: np.ndarray, x0: float, y0: float,
+                      x1: float, y1: float) -> tuple[np.ndarray, np.ndarray]:
+        """Sample arr along the line defined by normalised [0,1] coords.
+        Returns (positions_px, values) using bilinear interpolation."""
+        H, W = arr.shape[:2]
+        c0, r0 = x0 * W, y0 * H
+        c1, r1 = x1 * W, y1 * H
+        length = float(np.hypot(c1 - c0, r1 - r0))
+        n = max(2, int(length))
+        cols = np.linspace(c0, c1, n)
+        rows = np.linspace(r0, r1, n)
+        values = map_coordinates(arr, [rows, cols], order=1, mode='nearest')
+        positions = np.linspace(0.0, length, n)
+        return positions, values
+
+    @staticmethod
+    def _plot_cross_section(pos: np.ndarray, prof_a: np.ndarray, prof_b: np.ndarray,
+                             label_a: str, label_b: str, title: str) -> plt.Figure:
+        fig, ax1 = plt.subplots(figsize=(9, 4), constrained_layout=True)
+        ax1.plot(pos, prof_a, color="steelblue", linewidth=1.5, label=label_a)
+        ax1.plot(pos, prof_b, color="tomato", linewidth=1.5, label=label_b)
+        ax1.set_xlabel("Position along line (px)")
+        ax1.set_ylabel("Map value")
+        ax1.legend(loc="upper left", fontsize=8)
+        ax1.grid(True, alpha=0.3)
+
+        ax2 = ax1.twinx()
+        n = min(len(prof_a), len(prof_b))
+        diff = prof_a[:n] - prof_b[:n]
+        ax2.plot(pos[:n], diff, color="#2ca02c", linewidth=1.2,
+                 linestyle="--", alpha=0.85, label="A−B")
+        ax2.set_ylabel("Difference (A−B)", color="#2ca02c")
+        ax2.tick_params(axis="y", labelcolor="#2ca02c")
+        ax2.legend(loc="upper right", fontsize=8)
+        ax1.set_title(title, fontsize=10)
         return fig
