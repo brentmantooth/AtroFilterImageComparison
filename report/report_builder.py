@@ -934,10 +934,18 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
                        f'<strong>{who}</strong> used the starless image to reduce '
                        f'star contamination of the spatial frequency maps.</div>')
 
+        smooth_note = (
+            '<div class="info-box">ℹ All spatial detail maps are smoothed with a '
+            'Gaussian filter (σ = 1.0 px) <strong>for display only</strong>. '
+            'Scalar metric values (contrast ratios, wavelet SNR) are computed on '
+            'the raw unsmoothed data.</div>'
+        )
+
         return f"""
 <h2>8. Spatial Detail Comparison &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
 {err}
 {sl_note}
+{smooth_note}
 <div class="info-box">All maps below are computed on mean-signal-normalised data
 (each image divided by its own mean signal), making them dimensionless and comparable
 across different filter bandwidths. Images are shown side-by-side with a shared

@@ -63,7 +63,7 @@ class AnalysisThread(QThread):
 
         # Alignment (always serial — must complete before analysis begins)
         self.progress.emit(2, "Aligning images…")
-        self._align(img_a, img_b, result_a)
+        aligned = self._align(img_a, img_b, result_a)
 
         # Build ordered task list: (metric_key, display_label, callable)
         # Each callable is a zero-arg function that writes into result_a / result_b.
@@ -101,10 +101,17 @@ class AnalysisThread(QThread):
             if sl_b is not None:
                 sl_b.pixel_scale = img_b.pixel_scale
 
-            def _edge(src_a=sl_a or img_a, src_b=sl_b or img_b):
+            def _edge(src_a=sl_a or img_a, src_b=sl_b or img_b, _aligned=aligned):
                 ea = EdgeAnalyzer()
                 result_a.edge_metrics = ea.analyze(src_a, roi=roi)
-                result_b.edge_metrics = ea.analyze(src_b, roi=roi)
+                # When alignment succeeded and no explicit ROI was given, reuse
+                # A's auto-detected ROI for B so both profiles cover the same
+                # pixel region (valid because A was registered to B's frame).
+                if _aligned and roi is None:
+                    shared_roi = result_a.edge_metrics.get("roi_used")
+                else:
+                    shared_roi = roi
+                result_b.edge_metrics = ea.analyze(src_b, roi=shared_roi)
                 result_a.edge_metrics["used_starless"] = sl_a is not None
                 result_b.edge_metrics["used_starless"] = sl_b is not None
             tasks.append(("edge", "Extracting edge spread function", _edge))

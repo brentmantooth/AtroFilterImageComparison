@@ -36,6 +36,8 @@ class EdgeAnalyzer:
         else:
             roi_data, roi = self._auto_detect_roi(bgsub, image)
 
+        result["roi_used"] = roi   # expose for caller to reuse across both images
+
         if roi_data is None or roi_data.size == 0:
             return result
 

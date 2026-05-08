@@ -5,13 +5,14 @@ import matplotlib
 import matplotlib.colors as mcolors
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy.ndimage import generic_filter, gaussian_laplace, zoom
+from scipy.ndimage import generic_filter, gaussian_filter, gaussian_laplace, zoom
 import pywt
 
 from core.astro_image import AstroImage
 from core.models import STD_KERNEL_SIZES, LOG_SIGMAS, WAVELET_NAME, WAVELET_LEVELS
 
 MAX_DIM_FOR_STD = 2048   # downsample to this before generic_filter (performance)
+_DISPLAY_SMOOTH_SIGMA = 1.0   # applied to maps before plotting; does NOT affect metrics
 
 
 class SpatialDetailAnalyzer:
@@ -51,6 +52,10 @@ class SpatialDetailAnalyzer:
         mask_neb_a, mask_bg_a = self._make_masks(image_a)
         mask_neb_b, mask_bg_b = self._make_masks(image_b)
 
+        # Bright-feature bounding box for display cropping (uses image A's mask)
+        display_roi = self._nebula_bounding_box(mask_neb_a, norm_a.shape)
+        result["display_roi"] = display_roi
+
         # 1. Local standard deviation maps
         std_figs = self._std_analysis(
             norm_a, norm_b,
@@ -59,6 +64,7 @@ class SpatialDetailAnalyzer:
             kernel_sizes,
             image_a.label, image_b.label,
             result,
+            display_roi=display_roi,
         )
         figures.update(std_figs)
 
@@ -66,6 +72,7 @@ class SpatialDetailAnalyzer:
         log_figs = self._log_analysis(
             norm_a, norm_b, log_sigmas,
             image_a.label, image_b.label,
+            display_roi=display_roi,
         )
         figures.update(log_figs)
 
@@ -74,6 +81,7 @@ class SpatialDetailAnalyzer:
             norm_a, norm_b, wavelet, levels,
             image_a.label, image_b.label,
             result,
+            display_roi=display_roi,
         )
         figures.update(wav_figs)
 
@@ -112,6 +120,33 @@ class SpatialDetailAnalyzer:
 
         return nebula_mask, bg_mask
 
+    def _nebula_bounding_box(self, mask: np.ndarray,
+                              shape: tuple) -> tuple[int, int, int, int] | None:
+        """Return (r0, r1, c0, c1) bounding box of the nebula mask with 5% padding.
+        Returns None if the mask is empty or covers the whole image."""
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        if not rows.any() or not cols.any():
+            return None
+        r0 = int(np.where(rows)[0][0])
+        r1 = int(np.where(rows)[0][-1])
+        c0 = int(np.where(cols)[0][0])
+        c1 = int(np.where(cols)[0][-1])
+        pad = max(30, int(0.05 * max(r1 - r0, c1 - c0)))
+        r0 = max(0, r0 - pad)
+        r1 = min(shape[0], r1 + pad)
+        c0 = max(0, c0 - pad)
+        c1 = min(shape[1], c1 + pad)
+        # Only use the ROI if it covers <90% of the image
+        if (r1 - r0) / shape[0] > 0.9 and (c1 - c0) / shape[1] > 0.9:
+            return None
+        return (r0, r1, c0, c1)
+
+    @staticmethod
+    def _smooth_for_display(arr: np.ndarray) -> np.ndarray:
+        """Gaussian σ=1.0 smoothing for visualisation only."""
+        return gaussian_filter(arr.astype(float), sigma=_DISPLAY_SMOOTH_SIGMA)
+
     # ------------------------------------------------------------------
     # Local standard deviation maps
     # ------------------------------------------------------------------
@@ -120,13 +155,14 @@ class SpatialDetailAnalyzer:
                        mask_neb_a, mask_bg_a,
                        mask_neb_b, mask_bg_b,
                        kernel_sizes, label_a, label_b,
-                       result: dict) -> dict:
+                       result: dict,
+                       display_roi=None) -> dict:
         figures = {}
         for ks in kernel_sizes:
             std_a = self._compute_std_map(norm_a, ks)
             std_b = self._compute_std_map(norm_b, ks)
 
-            # Contrast ratios
+            # Contrast ratios (computed on unsmoothed maps)
             cr_a = self._contrast_ratio(std_a, mask_neb_a, mask_bg_a)
             cr_b = self._contrast_ratio(std_b, mask_neb_b, mask_bg_b)
             result["contrast_ratios_a"][ks] = cr_a
@@ -139,6 +175,7 @@ class SpatialDetailAnalyzer:
                 diff_title=f"Diff (A−B), kernel {ks}px",
                 cmap="viridis",
                 nonlinear_norm=True,
+                display_roi=display_roi,
             )
             figures[f"std_{ks}px"] = fig
 
@@ -150,7 +187,6 @@ class SpatialDetailAnalyzer:
         data = norm
         if max(norm.shape) > MAX_DIM_FOR_STD:
             factor = MAX_DIM_FOR_STD / max(norm.shape)
-            zy = factor * norm.shape[0] / norm.shape[0]
             new_h = int(norm.shape[0] * factor)
             new_w = int(norm.shape[1] * factor)
             data = zoom(norm, (new_h / norm.shape[0], new_w / norm.shape[1]), order=1)
@@ -182,7 +218,8 @@ class SpatialDetailAnalyzer:
     # ------------------------------------------------------------------
 
     def _log_analysis(self, norm_a, norm_b, sigmas,
-                       label_a, label_b) -> dict:
+                       label_a, label_b,
+                       display_roi=None) -> dict:
         figures = {}
         for sigma in sigmas:
             log_a = np.abs(gaussian_laplace(norm_a, sigma=sigma))
@@ -194,6 +231,7 @@ class SpatialDetailAnalyzer:
                 diff_title=f"LoG diff (A−B), σ={sigma}px",
                 cmap="hot",
                 nonlinear_norm=True,
+                display_roi=display_roi,
             )
             figures[f"log_sigma{sigma}"] = fig
         return figures
@@ -203,7 +241,8 @@ class SpatialDetailAnalyzer:
     # ------------------------------------------------------------------
 
     def _wavelet_analysis(self, norm_a, norm_b, wavelet, levels,
-                           label_a, label_b, result: dict) -> dict:
+                           label_a, label_b, result: dict,
+                           display_roi=None) -> dict:
         figures = {}
 
         coeffs_a = pywt.wavedec2(norm_a, wavelet, level=levels,
@@ -244,6 +283,7 @@ class SpatialDetailAnalyzer:
                 diff_title=f"Level {display_level} diff (A−B)",
                 cmap="RdBu_r",
                 symmetric_diff=True,
+                display_roi=display_roi,
             )
             figures[f"wavelet_level{display_level}"] = fig
 
@@ -286,9 +326,22 @@ class SpatialDetailAnalyzer:
                             diff_title: str = "",
                             cmap: str = "viridis",
                             symmetric_diff: bool = False,
-                            nonlinear_norm: bool = False) -> plt.Figure:
+                            nonlinear_norm: bool = False,
+                            display_roi=None,
+                            smooth_display: bool = True) -> plt.Figure:
+        # Crop to bright-feature ROI if available
+        if display_roi is not None:
+            r0, r1, c0, c1 = display_roi
+            arr_a = arr_a[r0:r1, c0:c1]
+            arr_b = arr_b[r0:r1, c0:c1]
+
+        # Smooth for display only (does not affect any metric values)
+        if smooth_display:
+            arr_a = self._smooth_for_display(arr_a)
+            arr_b = self._smooth_for_display(arr_b)
+
         # Shared color scale: use percentile clipping to prevent bright outliers
-        # (stars, hot pixels) from compressing the interesting nebula detail range.
+        # from compressing the interesting nebula detail range.
         vmin = max(0.0, float(min(np.percentile(arr_a, 0.5), np.percentile(arr_b, 0.5))))
         vmax = float(max(np.percentile(arr_a, 99.5), np.percentile(arr_b, 99.5)))
         if vmax <= vmin:
@@ -297,45 +350,45 @@ class SpatialDetailAnalyzer:
         # Sqrt (PowerNorm gamma=0.5) compresses bright stars, reveals faint nebula
         norm = mcolors.PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax) if nonlinear_norm else None
 
-        diff = arr_a[:min(arr_a.shape[0], arr_b.shape[0]),
-                      :min(arr_a.shape[1], arr_b.shape[1])] - \
-               arr_b[:min(arr_a.shape[0], arr_b.shape[0]),
-                      :min(arr_a.shape[1], arr_b.shape[1])]
+        # Difference panel (computed before any possible shape mismatch)
+        h_min = min(arr_a.shape[0], arr_b.shape[0])
+        w_min = min(arr_a.shape[1], arr_b.shape[1])
+        diff = arr_a[:h_min, :w_min] - arr_b[:h_min, :w_min]
 
         if symmetric_diff:
-            # Percentile-based symmetric scale so sparse large-diff pixels don't crush detail
             d_max = float(np.percentile(np.abs(diff), 99.5)) or 1.0
             dvmin, dvmax = -d_max, d_max
         else:
             dvmin = float(np.percentile(diff, 0.5))
             dvmax = float(np.percentile(diff, 99.5))
 
-        # 2×2 mosaic: A and B on the top row, difference spanning the full bottom row.
-        fig, axes_dict = plt.subplot_mosaic(
-            [["a", "b"], ["diff", "diff"]],
-            figsize=(14, 12),
-            constrained_layout=True,
-        )
-        ax_a    = axes_dict["a"]
-        ax_b    = axes_dict["b"]
-        ax_diff = axes_dict["diff"]
+        # 3×1 column layout — A, B, then diff stacked vertically.
+        # Use 1:1 pixel aspect; size figure based on the cropped array dimensions.
+        h, w = arr_a.shape[:2]
+        aspect_ratio = h / max(w, 1)
+        panel_w = 10.0
+        panel_h = panel_w * aspect_ratio
+        fig_h = panel_h * 3 + 2.0   # 3 panels + headroom for colorbars/titles
+        fig, axes = plt.subplots(3, 1, figsize=(panel_w, fig_h),
+                                  constrained_layout=True)
+        ax_a, ax_b, ax_diff = axes
 
         for ax, arr, title in zip([ax_a, ax_b], [arr_a, arr_b], [title_a, title_b]):
             im = ax.imshow(arr, origin="lower", cmap=cmap,
                            norm=norm if norm is not None else None,
                            vmin=None if norm is not None else vmin,
                            vmax=None if norm is not None else vmax,
-                           interpolation="nearest", aspect="auto")
+                           interpolation="nearest", aspect="equal")
             ax.set_title(title, fontsize=10)
             ax.axis("off")
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
         im_diff = ax_diff.imshow(diff, origin="lower", cmap="RdBu_r",
                                   vmin=dvmin, vmax=dvmax,
-                                  interpolation="nearest", aspect="auto")
+                                  interpolation="nearest", aspect="equal")
         ax_diff.set_title(diff_title, fontsize=10)
         ax_diff.axis("off")
-        fig.colorbar(im_diff, ax=ax_diff, fraction=0.023, pad=0.02)
+        fig.colorbar(im_diff, ax=ax_diff, fraction=0.046, pad=0.04)
 
         return fig
 

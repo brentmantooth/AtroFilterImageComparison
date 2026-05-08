@@ -169,7 +169,8 @@ class GhostDetector:
                         xytext=(c["parent_x"], c["parent_y"]),
                         arrowprops=dict(arrowstyle="->", color="red", lw=1.2))
             ax.plot(c["parent_x"] + c["dx"], c["parent_y"] + c["dy"],
-                    "rx", markersize=8, markeredgewidth=1.5)
+                    "o", markersize=9, markeredgewidth=1.5,
+                    markeredgecolor="red", markerfacecolor="none")
 
         total = len(candidates)
         note = f"  (showing top 25 of {total})" if total > 25 else ""

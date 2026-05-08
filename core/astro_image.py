@@ -29,18 +29,6 @@ def _dtype_label(dtype: np.dtype) -> str:
     return _DTYPE_LABELS.get(dtype.name, str(dtype))
 
 
-def asinh_stretch(data: np.ndarray, softening: float = 0.1) -> np.ndarray:
-    """Asinh stretch for display: clips to 0.1–99.9% range then applies arcsinh compression.
-
-    softening controls the knee of the curve — smaller values = more aggressive stretch.
-    """
-    lo, hi = np.percentile(data, [0.1, 99.9])
-    if hi <= lo:
-        hi = lo + 1.0
-    x = np.clip((data - lo) / (hi - lo), 0.0, 1.0)
-    out = np.arcsinh(x / softening) / np.arcsinh(1.0 / softening)
-    return np.clip(out, 0.0, 1.0)
-
 
 class AstroImage:
     """Wraps a single FITS or XISF file for analysis."""
@@ -257,21 +245,11 @@ class AstroImage:
     # ------------------------------------------------------------------
 
     def display_image(self, stretch: bool = True) -> np.ndarray:
-        """Return uint8 array suitable for Qt display.
-
-        stretch=True  — asinh nonlinear stretch (default, dramatic)
-        stretch=False — linear 0.1–99.9% percentile clip (moderate)
-        """
+        """Return uint8 array suitable for Qt display."""
         if self.data is None:
             raise RuntimeError("Image not loaded")
-        if stretch:
-            scaled = asinh_stretch(self.data)
-        else:
-            lo, hi = np.percentile(self.data, [0.1, 99.9])
-            if hi <= lo:
-                hi = lo + 1.0
-            scaled = np.clip((self.data - lo) / (hi - lo), 0.0, 1.0)
-        return (scaled * 255).astype(np.uint8)
+        from core.stretch import normalize_for_display
+        return normalize_for_display(self.data, stretch=stretch)
 
     # ------------------------------------------------------------------
     # Repr
