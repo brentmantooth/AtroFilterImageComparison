@@ -121,6 +121,16 @@ class AnalysisControlPanel(QWidget):
         align_row.addStretch()
         run_layout.addLayout(align_row)
 
+        self._parallel_cb = QCheckBox("Run metrics in parallel  (faster, uses more RAM)")
+        self._parallel_cb.setChecked(False)
+        self._parallel_cb.setToolTip(
+            "When checked, all selected analysis metrics run concurrently in separate\n"
+            "threads, which can significantly reduce total run time on multi-core CPUs.\n"
+            "RAM usage increases because all analyses hold their working data at once.\n"
+            "When unchecked, metrics run one at a time using less memory."
+        )
+        run_layout.addWidget(self._parallel_cb)
+
         self._run_btn = QPushButton("Run Analysis")
         self._run_btn.setEnabled(False)
         self._run_btn.setStyleSheet(
@@ -188,6 +198,7 @@ class AnalysisControlPanel(QWidget):
             "wavelet_levels": self._wavelet_levels.value(),
             "roi": self._roi,
             "output_dir": self._out_dir.text().strip() or str(Path.home() / "filter_reports"),
+            "parallel": self._parallel_cb.isChecked(),
         }
 
     # ------------------------------------------------------------------

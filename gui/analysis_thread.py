@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
+from typing import Callable
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.astro_image import AstroImage
@@ -38,14 +41,18 @@ class AnalysisThread(QThread):
         except Exception as exc:
             self.error.emit(str(exc))
 
+    # ------------------------------------------------------------------
+    # Main execution
+    # ------------------------------------------------------------------
+
     def _execute(self) -> None:
         img_a = self._image_a
         img_b = self._image_b
         s = self._settings
         metrics = s.get("metrics", {})
         roi = s.get("roi")
+        parallel = s.get("parallel", False)
 
-        # Apply pixel scale override if provided
         pso = s.get("pixel_scale_override")
         if pso:
             img_a.pixel_scale = pso
@@ -54,111 +61,82 @@ class AnalysisThread(QThread):
         result_a = AnalysisResult(label=img_a.label)
         result_b = AnalysisResult(label=img_b.label)
 
-        # Alignment (always attempted; errors are non-fatal)
+        # Alignment (always serial — must complete before analysis begins)
         self.progress.emit(2, "Aligning images…")
-        aligned = self._align(img_a, img_b, result_a)
+        self._align(img_a, img_b, result_a)
 
-        step = 0
-        total_steps = sum(1 for v in metrics.values() if v)
-        total_steps += 1  # report generation
-
-        def advance(msg: str) -> None:
-            nonlocal step
-            step += 1
-            pct = int(step / (total_steps + 1) * 95)
-            self.progress.emit(pct, msg)
+        # Build ordered task list: (metric_key, display_label, callable)
+        # Each callable is a zero-arg function that writes into result_a / result_b.
+        tasks: list[tuple[str, str, Callable[[], None]]] = []
 
         if metrics.get("psf"):
-            advance("Computing PSF / MTF…")
-            try:
-                analyzer = PSFAnalyzer()
-                result_a.psf_metrics = analyzer.analyze(img_a)
-                result_b.psf_metrics = analyzer.analyze(img_b)
-            except Exception as exc:
-                msg = f"PSF/MTF analysis failed: {exc}"
-                result_a.errors["psf"] = msg
-                result_b.errors["psf"] = msg
+            def _psf(img_a=img_a, img_b=img_b):
+                a = PSFAnalyzer()
+                result_a.psf_metrics = a.analyze(img_a)
+                result_b.psf_metrics = a.analyze(img_b)
+            tasks.append(("psf", "Computing PSF / MTF", _psf))
 
         if metrics.get("halo"):
-            advance("Analysing halos…")
-            try:
-                analyzer = HaloAnalyzer()
-                result_a.halo_metrics = analyzer.analyze(img_a)
-                result_b.halo_metrics = analyzer.analyze(img_b)
-            except Exception as exc:
-                msg = f"Halo analysis failed: {exc}"
-                result_a.errors["halo"] = msg
-                result_b.errors["halo"] = msg
+            def _halo(img_a=img_a, img_b=img_b):
+                a = HaloAnalyzer()
+                result_a.halo_metrics = a.analyze(img_a)
+                result_b.halo_metrics = a.analyze(img_b)
+            tasks.append(("halo", "Analysing halos", _halo))
 
         if metrics.get("ghost"):
-            advance("Searching for ghosts…")
-            try:
+            def _ghost(img_a=img_a, img_b=img_b):
+                # In parallel mode PSF may not have completed yet; fallback to 4.0 px.
                 fwhm_a = (result_a.psf_metrics or {}).get("fwhm_px") or 4.0
                 fwhm_b = (result_b.psf_metrics or {}).get("fwhm_px") or 4.0
                 det = GhostDetector()
                 result_a.ghost_metrics = det.analyze(img_a, psf_fwhm_px=fwhm_a)
                 result_b.ghost_metrics = det.analyze(img_b, psf_fwhm_px=fwhm_b)
-            except Exception as exc:
-                msg = f"Ghost detection failed: {exc}"
-                result_a.errors["ghost"] = msg
-                result_b.errors["ghost"] = msg
+            tasks.append(("ghost", "Searching for ghosts", _ghost))
 
         if metrics.get("edge"):
-            advance("Extracting edge spread function…")
-            try:
+            sl_a = self._starless_a
+            sl_b = self._starless_b
+            if sl_a is not None:
+                sl_a.pixel_scale = img_a.pixel_scale
+            if sl_b is not None:
+                sl_b.pixel_scale = img_b.pixel_scale
+
+            def _edge(src_a=sl_a or img_a, src_b=sl_b or img_b):
                 ea = EdgeAnalyzer()
-                # Use starless image if available — removes stars from the strongest
-                # gradient search so the auto-ROI lands on a nebula boundary, not a star.
-                ea_src_a = self._starless_a or img_a
-                ea_src_b = self._starless_b or img_b
-                # Carry the original pixel scale so arcsec conversion is correct.
-                if self._starless_a is not None:
-                    self._starless_a.pixel_scale = img_a.pixel_scale
-                if self._starless_b is not None:
-                    self._starless_b.pixel_scale = img_b.pixel_scale
-                result_a.edge_metrics = ea.analyze(ea_src_a, roi=roi)
-                result_b.edge_metrics = ea.analyze(ea_src_b, roi=roi)
-                result_a.edge_metrics["used_starless"] = self._starless_a is not None
-                result_b.edge_metrics["used_starless"] = self._starless_b is not None
-            except Exception as exc:
-                msg = f"Edge analysis failed: {exc}"
-                result_a.errors["edge"] = msg
-                result_b.errors["edge"] = msg
+                result_a.edge_metrics = ea.analyze(src_a, roi=roi)
+                result_b.edge_metrics = ea.analyze(src_b, roi=roi)
+                result_a.edge_metrics["used_starless"] = sl_a is not None
+                result_b.edge_metrics["used_starless"] = sl_b is not None
+            tasks.append(("edge", "Extracting edge spread function", _edge))
 
         if metrics.get("power"):
-            advance("Computing power spectrum…")
-            try:
-                ps_a = self._starless_a or img_a
-                ps_b = self._starless_b or img_b
+            def _power(ps_a=self._starless_a or img_a, ps_b=self._starless_b or img_b):
                 pa = PowerSpectrumAnalyzer()
                 result_a.power_metrics = pa.analyze(ps_a, roi=roi)
                 result_b.power_metrics = pa.analyze(ps_b, roi=roi)
                 result_a.power_metrics["used_starless"] = self._starless_a is not None
                 result_b.power_metrics["used_starless"] = self._starless_b is not None
-            except Exception as exc:
-                msg = f"Power spectrum analysis failed: {exc}"
-                result_a.errors["power"] = msg
-                result_b.errors["power"] = msg
+            tasks.append(("power", "Computing power spectrum", _power))
 
         if metrics.get("spatial"):
-            advance("Running spatial detail analysis…")
-            try:
-                sd_a = self._starless_a or img_a
-                sd_b = self._starless_b or img_b
-                wavelet_levels = s.get("wavelet_levels", 4)
+            wavelet_levels = s.get("wavelet_levels", 4)
+
+            def _spatial(sd_a=self._starless_a or img_a, sd_b=self._starless_b or img_b):
                 sda = SpatialDetailAnalyzer()
                 spatial = sda.analyze(sd_a, sd_b, levels=wavelet_levels)
                 spatial["used_starless_a"] = self._starless_a is not None
                 spatial["used_starless_b"] = self._starless_b is not None
                 result_a.spatial_metrics = spatial
                 result_b.spatial_metrics = spatial  # shared reference
-            except Exception as exc:
-                msg = f"Spatial detail analysis failed: {exc}"
-                result_a.errors["spatial"] = msg
-                result_b.errors["spatial"] = msg
+            tasks.append(("spatial", "Running spatial detail analysis", _spatial))
 
-        # Generate report
-        advance("Generating HTML report…")
+        if parallel and len(tasks) > 1:
+            self._run_parallel(tasks, result_a, result_b)
+        else:
+            self._run_serial(tasks, result_a, result_b)
+
+        # Report generation (always serial — needs all results)
+        self.progress.emit(96, "Generating HTML report…")
         report_path = ""
         try:
             builder = ReportBuilder()
@@ -173,6 +151,52 @@ class AnalysisThread(QThread):
 
         self.progress.emit(100, "Done")
         self.finished.emit(result_a, result_b, report_path)
+
+    # ------------------------------------------------------------------
+    # Serial runner
+    # ------------------------------------------------------------------
+
+    def _run_serial(self, tasks: list, result_a: AnalysisResult,
+                    result_b: AnalysisResult) -> None:
+        total = len(tasks)
+        for i, (key, label, func) in enumerate(tasks):
+            pct = int((i + 1) / (total + 1) * 90) + 5
+            self.progress.emit(pct, f"{label}…")
+            try:
+                func()
+            except Exception as exc:
+                msg = f"{label} failed: {exc}"
+                result_a.errors[key] = msg
+                result_b.errors[key] = msg
+
+    # ------------------------------------------------------------------
+    # Parallel runner
+    # ------------------------------------------------------------------
+
+    def _run_parallel(self, tasks: list, result_a: AnalysisResult,
+                      result_b: AnalysisResult) -> None:
+        total = len(tasks)
+        labels = {key: label for key, label, _ in tasks}
+        self.progress.emit(5, f"Running {total} analyses in parallel…")
+
+        future_to_key: dict[concurrent.futures.Future, str] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
+            for key, _label, func in tasks:
+                future_to_key[executor.submit(func)] = key
+
+            completed = 0
+            for future in concurrent.futures.as_completed(future_to_key):
+                key = future_to_key[future]
+                completed += 1
+                pct = int(completed / total * 85) + 5
+                try:
+                    future.result()
+                    self.progress.emit(pct, f"✓ {labels[key]}")
+                except Exception as exc:
+                    msg = f"{labels[key]} failed: {exc}"
+                    result_a.errors[key] = msg
+                    result_b.errors[key] = msg
+                    self.progress.emit(pct, f"✗ {labels[key]} failed")
 
     # ------------------------------------------------------------------
     # Image alignment
