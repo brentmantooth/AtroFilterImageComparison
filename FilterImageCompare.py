@@ -4,7 +4,7 @@ from gui.main_window import MainWindow
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setApplicationName("Filter Image Comparator")
+    app.setApplicationName("Filter Workbench")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
