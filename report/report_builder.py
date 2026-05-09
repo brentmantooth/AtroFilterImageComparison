@@ -14,7 +14,7 @@ from scipy.signal import fftconvolve
 from scipy.ndimage import zoom as _ndimage_zoom
 from PIL import Image as _PILImage
 
-from core.models import AnalysisResult, HALO_FIT_RADIUS_PX
+from core.models import AnalysisResult, HALO_FIT_RADIUS_PX, XS_LINE_ALPHA
 from core.astro_image import AstroImage
 
 _TEST_IMAGE_PATH = Path(__file__).parent.parent / "resources" / "ContrastTestImage.png"
@@ -62,7 +62,9 @@ def _fig_to_b64(fig: plt.Figure, dpi: int = 120) -> str:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
     buf.seek(0)
-    return base64.b64encode(buf.read()).decode()
+    data = base64.b64encode(buf.read()).decode()
+    plt.close(fig)
+    return data
 
 
 def _img_tag(fig: plt.Figure, alt: str = "") -> str:
@@ -645,7 +647,7 @@ bright stars.</div>"""
         bgsub_b = img_b.background_subtracted() if img_b.background is not None else img_b.data
 
         n = len(matched)
-        pairs_per_row = min(3, n)
+        pairs_per_row = min(2, n)
         cols_per_pair = 3   # img A | img B | cross-section
         n_rows = (n + pairs_per_row - 1) // pairs_per_row
         n_cols = pairs_per_row * cols_per_pair
@@ -719,10 +721,10 @@ bright stars.</div>"""
                 xs_b_vals = (np.maximum(cut_b[mid_row, :w_min], noise_floor)
                              if sb is not None else None)
                 ax_xs.semilogy(px_offset, xs_a, color="steelblue",
-                               linewidth=1.0, label=ra.label)
+                               linewidth=1.0, alpha=XS_LINE_ALPHA, label=ra.label)
                 if xs_b_vals is not None:
                     ax_xs.semilogy(px_offset, xs_b_vals, color="tomato",
-                                   linewidth=1.0, label=rb.label)
+                                   linewidth=1.0, alpha=XS_LINE_ALPHA, label=rb.label)
                 ax_xs.set_title(f"#{idx+1} cross-section", fontsize=7)
                 ax_xs.set_xlabel("px from centre", fontsize=6)
                 ax_xs.tick_params(labelsize=6)
@@ -980,6 +982,21 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
             'the raw unsmoothed data.</div>'
         )
 
+        xs_context_html = ""
+        if has_crosshair and "xs_context" in figs:
+            xs_context_html = f"""
+{_hires_img_tag(figs["xs_context"], "xs_context")}
+<p class="caption">Zoomed crop centred on the cross-section line.
+Orange line = {ra.label}, blue line = {rb.label}.</p>
+{_hires_img_tag(figs.get("xs_image_profile"), "xs_image_profile")}
+<p class="caption">Brightness profile along the drawn line (mean-signal-normalised).</p>"""
+        else:
+            xs_context_html = (
+                '<div class="info-box">No cross-section line was drawn. '
+                'Draw a line in the GUI before running the analysis to see '
+                'cross-section profiles here.</div>'
+            )
+
         return f"""
 <h2>8. Spatial Detail Comparison &nbsp;<span class="metric-label-ok">✓ bandwidth-normalised</span></h2>
 {err}
@@ -990,7 +1007,10 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
 across different filter bandwidths. Images are shown side-by-side with a shared
 colour scale; the third panel shows the difference A−B.</div>
 
-<h3>8a. Local Standard Deviation Maps</h3>
+<h3>8a. Image Cross-Section</h3>
+{xs_context_html}
+
+<h3>8b. Local Standard Deviation Maps</h3>
 <div class="info-box">Measures how much pixel values vary within a neighbourhood.
 Higher values in nebula regions indicate more preserved local detail and contrast.
 <strong>Contrast ratio</strong> = median(nebula std) / median(background std);
@@ -1003,7 +1023,7 @@ a higher ratio indicates better differentiation of nebula structure from backgro
 <p class="caption">Side-by-side local σ maps at each kernel size (shared colour scale).
 The difference map (right) highlights where one filter preserves more local variation.</p>
 {xs_note}{xs_figs_for("xs_std_")}
-<h3>8b. Laplacian of Gaussian (LoG) Maps</h3>
+<h3>8c. Laplacian of Gaussian (LoG) Maps</h3>
 <div class="info-box">The Laplacian of Gaussian highlights regions of rapid intensity
 change at a specific spatial scale (controlled by σ). Brighter regions in |LoG| maps
 indicate stronger local curvature — sharper edges and finer nebula filaments.
@@ -1012,7 +1032,7 @@ Smaller σ highlights finer features; larger σ highlights broader structures.</
 <p class="caption">|LoG| maps at σ = 1.5, 3, and 6 px (shared colour scale per row).
 A filter preserving more fine detail shows brighter, more defined boundaries at small σ.</p>
 {xs_figs_for("xs_log_")}
-<h3>8c. Wavelet Decomposition</h3>
+<h3>8d. Wavelet Decomposition</h3>
 <div class="info-box">A 4-level Daubechies-4 wavelet decomposition separates the
 image into spatial scale bands. Level 1 (~2 px) is noise-dominated and used only
 for noise estimation. Levels 2–3 carry the most relevant signal for filter comparison.

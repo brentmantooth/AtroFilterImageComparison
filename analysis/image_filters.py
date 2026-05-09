@@ -9,7 +9,7 @@ from scipy.ndimage import generic_filter, gaussian_filter, gaussian_laplace, map
 import pywt
 
 from core.astro_image import AstroImage
-from core.models import STD_KERNEL_SIZES, LOG_SIGMAS, WAVELET_NAME, WAVELET_LEVELS
+from core.models import STD_KERNEL_SIZES, LOG_SIGMAS, WAVELET_NAME, WAVELET_LEVELS, XS_LINE_ALPHA
 
 MAX_DIM_FOR_STD = 2048   # downsample to this before generic_filter (performance)
 _DISPLAY_SMOOTH_SIGMA = 1.0   # applied to maps before plotting; does NOT affect metrics
@@ -88,6 +88,14 @@ class SpatialDetailAnalyzer:
             crosshair=crosshair,
         )
         figures.update(wav_figs)
+
+        if crosshair is not None:
+            figures["xs_context"] = self._plot_context_figure(
+                image_a, image_b, image_a.label, image_b.label, crosshair)
+            pos_a, prof_a = self._sample_line(norm_a, **crosshair)
+            pos_b, prof_b = self._sample_line(norm_b, **crosshair)
+            figures["xs_image_profile"] = self._plot_image_profile(
+                pos_a, prof_a, pos_b, prof_b, image_a.label, image_b.label)
 
         result["crosshair"] = crosshair
         result["figures"] = figures
@@ -463,8 +471,8 @@ class SpatialDetailAnalyzer:
         n = min(len(pos), len(prof_a), len(prof_b))
         pos, prof_a, prof_b = pos[:n], prof_a[:n], prof_b[:n]
         fig, ax1 = plt.subplots(figsize=(9, 4), constrained_layout=True)
-        ax1.plot(pos, prof_a, color="steelblue", linewidth=1.5, label=label_a)
-        ax1.plot(pos, prof_b, color="tomato", linewidth=1.5, label=label_b)
+        ax1.plot(pos, prof_a, color="steelblue", linewidth=1.5, alpha=XS_LINE_ALPHA, label=label_a)
+        ax1.plot(pos, prof_b, color="tomato", linewidth=1.5, alpha=XS_LINE_ALPHA, label=label_b)
         ax1.set_xlabel("Position along line (px)")
         ax1.set_ylabel("Map value")
         ax1.legend(loc="upper left", fontsize=8)
@@ -479,4 +487,68 @@ class SpatialDetailAnalyzer:
         ax2.tick_params(axis="y", labelcolor="#2ca02c")
         ax2.legend(loc="upper right", fontsize=8)
         ax1.set_title(title, fontsize=10)
+        return fig
+
+    @staticmethod
+    def _stretch_for_display(arr: np.ndarray) -> np.ndarray:
+        lo, hi = np.percentile(arr, [0.5, 99.9])
+        if hi > lo:
+            return np.clip((arr.astype(float) - lo) / (hi - lo), 0.0, 1.0)
+        return np.zeros_like(arr, dtype=float)
+
+    def _plot_context_figure(self, img_a: AstroImage, img_b: AstroImage,
+                              label_a: str, label_b: str,
+                              crosshair: dict) -> plt.Figure:
+        """2×1 zoomed crop of both images with the cross-section line overlaid."""
+        H_a, W_a = img_a.data.shape[:2]
+        H_b, W_b = img_b.data.shape[:2]
+
+        x0a = crosshair["x0"] * W_a;  y0a = crosshair["y0"] * H_a
+        x1a = crosshair["x1"] * W_a;  y1a = crosshair["y1"] * H_a
+        pad_a = max(30, int(0.15 * float(np.hypot(x1a - x0a, y1a - y0a))))
+        rx0a = max(0,   int(min(x0a, x1a) - pad_a))
+        ry0a = max(0,   int(min(y0a, y1a) - pad_a))
+        rx1a = min(W_a, int(max(x0a, x1a) + pad_a))
+        ry1a = min(H_a, int(max(y0a, y1a) + pad_a))
+        crop_a = self._stretch_for_display(img_a.data[ry0a:ry1a, rx0a:rx1a])
+
+        x0b = crosshair["x0"] * W_b;  y0b = crosshair["y0"] * H_b
+        x1b = crosshair["x1"] * W_b;  y1b = crosshair["y1"] * H_b
+        pad_b = max(30, int(0.15 * float(np.hypot(x1b - x0b, y1b - y0b))))
+        rx0b = max(0,   int(min(x0b, x1b) - pad_b))
+        ry0b = max(0,   int(min(y0b, y1b) - pad_b))
+        rx1b = min(W_b, int(max(x0b, x1b) + pad_b))
+        ry1b = min(H_b, int(max(y0b, y1b) + pad_b))
+        crop_b = self._stretch_for_display(img_b.data[ry0b:ry1b, rx0b:rx1b])
+
+        fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+
+        ax_a.imshow(crop_a, origin="upper", cmap="gray", interpolation="nearest")
+        ax_a.plot([x0a - rx0a, x1a - rx0a], [y0a - ry0a, y1a - ry0a],
+                  color="#ff7f0e", linewidth=2)
+        ax_a.set_title(label_a, fontsize=10)
+        ax_a.axis("off")
+
+        ax_b.imshow(crop_b, origin="upper", cmap="gray", interpolation="nearest")
+        ax_b.plot([x0b - rx0b, x1b - rx0b], [y0b - ry0b, y1b - ry0b],
+                  color="#1f77b4", linewidth=2)
+        ax_b.set_title(label_b, fontsize=10)
+        ax_b.axis("off")
+
+        return fig
+
+    @staticmethod
+    def _plot_image_profile(pos_a: np.ndarray, prof_a: np.ndarray,
+                             pos_b: np.ndarray, prof_b: np.ndarray,
+                             label_a: str, label_b: str) -> plt.Figure:
+        fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+        ax.plot(pos_a, prof_a, color="#ff7f0e", linewidth=1.5,
+                alpha=XS_LINE_ALPHA, label=label_a)
+        ax.plot(pos_b, prof_b, color="#1f77b4", linewidth=1.5,
+                alpha=XS_LINE_ALPHA, label=label_b)
+        ax.set_xlabel("Position along line (px)")
+        ax.set_ylabel("Pixel value (normalised)")
+        ax.set_title("Cross-section brightness profile")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
         return fig

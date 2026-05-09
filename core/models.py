@@ -24,6 +24,8 @@ LOG_SIGMAS = (1.5, 3.0, 6.0)
 WAVELET_NAME = "db4"
 WAVELET_LEVELS = 4
 
+XS_LINE_ALPHA = 0.8   # alpha for all cross-section profile lines in reports
+
 
 # === DATA CLASSES ===
 
