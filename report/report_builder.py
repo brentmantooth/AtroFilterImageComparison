@@ -11,7 +11,8 @@ import matplotlib
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from scipy.signal import fftconvolve
-from scipy.ndimage import zoom as _ndimage_zoom
+from scipy.ndimage import zoom as _ndimage_zoom, gaussian_filter as _gaussian_filter
+from scipy.interpolate import griddata as _griddata
 from PIL import Image as _PILImage
 
 from core.models import AnalysisResult, HALO_FIT_RADIUS_PX, XS_LINE_ALPHA
@@ -144,7 +145,7 @@ class ReportBuilder:
         sections = [
             self._section_header(image_a, image_b, result_a, result_b, bw_differ),
             self._section_observation(result_a, result_b),
-            self._section_psf(result_a, result_b),
+            self._section_psf(result_a, result_b, image_a, image_b),
             self._section_halo(result_a, result_b, image_a, image_b),
             self._section_ghost(result_a, result_b),
             self._section_edge(result_a, result_b, bw_differ),
@@ -357,7 +358,8 @@ shown in the metadata table above.</div>"""
 
     # ── Section 3: PSF / MTF ──────────────────────────────────────────────────
 
-    def _section_psf(self, ra: AnalysisResult, rb: AnalysisResult) -> str:
+    def _section_psf(self, ra: AnalysisResult, rb: AnalysisResult,
+                      img_a: AstroImage, img_b: AstroImage) -> str:
         err = _error_box("psf", ra, rb)
         pa = ra.psf_metrics or {}
         pb = rb.psf_metrics or {}
@@ -373,6 +375,31 @@ shown in the metadata table above.</div>"""
         img_epsf_a = _img_tag((pa.get("figures") or {}).get("epsf"), f"ePSF {ra.label}")
         img_epsf_b = _img_tag((pb.get("figures") or {}).get("epsf"), f"ePSF {rb.label}")
         img_scatter = _img_tag(self._plot_fwhm_scatter(ra, rb), "FWHM scatter")
+
+        # Spatial maps and histograms
+        img_h_a, img_w_a = img_a.data.shape[:2]
+        img_h_b, img_w_b = img_b.data.shape[:2]
+        stars_a = pa.get("star_data", [])
+        stars_b = pb.get("star_data", [])
+        fwhm_vals_a = [s["fwhm"] for s in stars_a if s.get("fwhm") is not None]
+        fwhm_vals_b = [s["fwhm"] for s in stars_b if s.get("fwhm") is not None]
+        ecc_vals_a  = [s["eccentricity"] for s in stars_a if s.get("eccentricity") is not None]
+        ecc_vals_b  = [s["eccentricity"] for s in stars_b if s.get("eccentricity") is not None]
+
+        img_fwhm_map  = _img_tag(self._plot_psf_spatial_map(
+            stars_a, stars_b, "fwhm", ra.label, rb.label,
+            img_h_a, img_w_a, img_h_b, img_w_b,
+            "FWHM spatial map (px)", "viridis"), "FWHM spatial map")
+        img_fwhm_hist = _img_tag(self._plot_psf_histogram(
+            fwhm_vals_a, fwhm_vals_b, ra.label, rb.label,
+            "FWHM (px)", "FWHM distribution"), "FWHM histogram")
+        img_ecc_map   = _img_tag(self._plot_psf_spatial_map(
+            stars_a, stars_b, "eccentricity", ra.label, rb.label,
+            img_h_a, img_w_a, img_h_b, img_w_b,
+            "Eccentricity spatial map", "plasma"), "Eccentricity spatial map")
+        img_ecc_hist  = _img_tag(self._plot_psf_histogram(
+            ecc_vals_a, ecc_vals_b, ra.label, rb.label,
+            "Eccentricity", "Eccentricity distribution"), "Eccentricity histogram")
 
         return f"""
 <h2>3. PSF / MTF &nbsp;<span class="metric-label-ok">✓ bandwidth-independent</span></h2>
@@ -391,9 +418,20 @@ These metrics are normalised to unit amplitude and are valid regardless of filte
   <tr><td>FWHM (arcsec)</td><td class="{ca}">{_val(pa.get("fwhm_arcsec"))}</td><td class="{cb}">{_val(pb.get("fwhm_arcsec"))}</td></tr>
   <tr><td>Moffat β</td><td>{_val(pa.get("beta"))}</td><td>{_val(pb.get("beta"))}</td></tr>
   <tr><td>Ellipticity</td><td>{_val(pa.get("ellipticity"))}</td><td>{_val(pb.get("ellipticity"))}</td></tr>
+  <tr><td>Eccentricity</td><td>{_val(pa.get("eccentricity"))}</td><td>{_val(pb.get("eccentricity"))}</td></tr>
   <tr><td>MTF50 (cyc/px)</td><td class="{ma}">{_val(pa.get("mtf50_cycles_per_px"), ".4f")}</td><td class="{mb}">{_val(pb.get("mtf50_cycles_per_px"), ".4f")}</td></tr>
   <tr><td>MTF @ Nyquist</td><td>{_val(pa.get("mtf_nyquist"), ".4f")}</td><td>{_val(pb.get("mtf_nyquist"), ".4f")}</td></tr>
 </table>
+
+{img_fwhm_map}
+<p class="caption">Smoothed FWHM map (px) across the field. Shared colour scale between both images. Dots mark individual star measurements.</p>
+{img_fwhm_hist}
+<p class="caption">Distribution of per-star FWHM values.</p>
+
+{img_ecc_map}
+<p class="caption">Smoothed eccentricity map across the field. 0 = circular star, 1 = fully elongated.</p>
+{img_ecc_hist}
+<p class="caption">Distribution of per-star eccentricity values.</p>
 
 {img_mtf}
 <p class="caption">MTF curves for both filters overlaid. Higher curve = better
@@ -417,6 +455,85 @@ better optical quality. Ellipticity &gt; 0.1 may indicate filter tilt or astigma
 MTF50 indicate sharper image resolution. A higher Moffat β (steeper wing falloff)
 indicates less scattered light. Ellipticity should be similar between filters;
 large differences may indicate filter flatness issues.</div>"""
+
+    @staticmethod
+    def _plot_psf_spatial_map(
+            stars_a: list, stars_b: list, field: str,
+            label_a: str, label_b: str,
+            img_h_a: int, img_w_a: int,
+            img_h_b: int, img_w_b: int,
+            title: str, cmap: str = "viridis") -> "plt.Figure | None":
+        pts_a = [(s["x"], s["y"], s[field]) for s in stars_a if s.get(field) is not None]
+        pts_b = [(s["x"], s["y"], s[field]) for s in stars_b if s.get(field) is not None]
+        if not pts_a and not pts_b:
+            return None
+
+        all_vals = [p[2] for p in pts_a] + [p[2] for p in pts_b]
+        vmin, vmax = float(np.percentile(all_vals, 1)), float(np.percentile(all_vals, 99))
+
+        def _make_map(pts, img_h, img_w):
+            if not pts:
+                return None
+            # Grid with same aspect ratio as image; long axis = 400 px
+            if img_w >= img_h:
+                gw, gh = 400, max(1, int(400 * img_h / img_w))
+            else:
+                gh, gw = 400, max(1, int(400 * img_w / img_h))
+            gx, gy = np.meshgrid(np.linspace(0, img_w, gw),
+                                  np.linspace(0, img_h, gh))
+            coords = np.array([(p[0], p[1]) for p in pts])
+            vals   = np.array([p[2] for p in pts])
+            m = _griddata(coords, vals, (gx, gy), method="linear")
+            nn = _griddata(coords, vals, (gx, gy), method="nearest")
+            m = np.where(np.isnan(m), nn, m)
+            return _gaussian_filter(m, sigma=3.0)
+
+        map_a = _make_map(pts_a, img_h_a, img_w_a)
+        map_b = _make_map(pts_b, img_h_b, img_w_b)
+
+        fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+        fig.suptitle(title, fontsize=11)
+
+        for ax, m, pts, img_h, img_w, lbl in [
+            (ax_a, map_a, pts_a, img_h_a, img_w_a, label_a),
+            (ax_b, map_b, pts_b, img_h_b, img_w_b, label_b),
+        ]:
+            if m is not None:
+                im = ax.imshow(m, origin="upper", cmap=cmap, vmin=vmin, vmax=vmax,
+                               extent=[0, img_w, img_h, 0], aspect="equal",
+                               interpolation="bilinear")
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            if pts:
+                ax.scatter([p[0] for p in pts], [p[1] for p in pts],
+                           c=[p[2] for p in pts], cmap=cmap, vmin=vmin, vmax=vmax,
+                           s=18, edgecolors="white", linewidths=0.5, zorder=3)
+            ax.set_title(lbl, fontsize=10)
+            ax.set_xlabel("x (px)")
+            ax.set_ylabel("y (px)")
+        return fig
+
+    @staticmethod
+    def _plot_psf_histogram(
+            vals_a: list, vals_b: list,
+            label_a: str, label_b: str,
+            xlabel: str, title: str) -> "plt.Figure | None":
+        if not vals_a and not vals_b:
+            return None
+        all_vals = vals_a + vals_b
+        rng = (float(min(all_vals)), float(max(all_vals)))
+        fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+        if vals_a:
+            ax.hist(vals_a, bins=20, range=rng, alpha=XS_LINE_ALPHA,
+                    color="#ff7f0e", label=label_a, edgecolor="none")
+        if vals_b:
+            ax.hist(vals_b, bins=20, range=rng, alpha=XS_LINE_ALPHA,
+                    color="#1f77b4", label=label_b, edgecolor="none")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Count")
+        ax.set_title(title)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        return fig
 
     def _plot_fwhm_scatter(self, ra: AnalysisResult, rb: AnalysisResult) -> plt.Figure | None:
         """Scatter plot of per-star FWHM_A vs FWHM_B for matched stars."""

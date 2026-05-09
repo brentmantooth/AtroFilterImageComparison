@@ -65,20 +65,29 @@ class PSFAnalyzer:
         median_beta = float(np.median(betas))
         fwhm_arcsec = median_fwhm * image.pixel_scale
 
+        # Ellipticity + per-star eccentricity from image moments (needs bgsub + psf_stars)
+        ell, pa, ell_per_star = self._measure_ellipticity(bgsub, psf_stars)
+        ecc_by_pos = {(s["x"], s["y"]): s["eccentricity"] for s in ell_per_star}
+
         result.update({
             "n_stars_used": len(moffat_fits),
             "fwhm_px": median_fwhm,
             "fwhm_arcsec": fwhm_arcsec,
             "beta": median_beta,
             "seeing_dominated": fwhm_arcsec > SEEING_WARN_FWHM_ARCS,
-            "star_data": [{"x": f["x"], "y": f["y"], "fwhm": f["fwhm"]}
-                          for f in moffat_fits],
+            "star_data": [
+                {"x": f["x"], "y": f["y"], "fwhm": f["fwhm"],
+                 "eccentricity": ecc_by_pos.get((f["x"], f["y"]))}
+                for f in moffat_fits
+            ],
         })
 
-        # Ellipticity from image moments
-        ell, pa = self._measure_ellipticity(bgsub, psf_stars)
         result["ellipticity"] = ell
         result["position_angle"] = pa
+        result["eccentricity"] = (
+            float(np.median([s["eccentricity"] for s in ell_per_star]))
+            if ell_per_star else None
+        )
 
         # Empirical PSF and MTF
         epsf, freq, mtf = self._build_epsf_and_mtf(image, psf_stars, median_fwhm)
@@ -146,10 +155,11 @@ class PSFAnalyzer:
     # ------------------------------------------------------------------
 
     def _measure_ellipticity(self, bgsub: np.ndarray,
-                               stars: Table) -> tuple[float, float]:
+                               stars: Table) -> tuple[float, float, list]:
         from photutils.morphology import data_properties
         ellipticities = []
         pas = []
+        per_star = []
         h, w = bgsub.shape
         half = CUTOUT_SIZE // 2
 
@@ -170,12 +180,16 @@ class PSFAnalyzer:
                     props = data_properties(cutout)
                 ellipticities.append(float(props.ellipticity.value))
                 pas.append(float(props.orientation.value))
+                per_star.append({
+                    "x": xc, "y": yc,
+                    "eccentricity": float(props.eccentricity.value),
+                })
             except Exception:
                 continue
 
         if not ellipticities:
-            return 0.0, 0.0
-        return float(np.median(ellipticities)), float(np.median(pas))
+            return 0.0, 0.0, []
+        return float(np.median(ellipticities)), float(np.median(pas)), per_star
 
     # ------------------------------------------------------------------
     # Empirical PSF and MTF
