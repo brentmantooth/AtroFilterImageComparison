@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSettings, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QLabel, QLineEdit, QPushButton, QProgressBar, QFileDialog,
@@ -26,6 +26,10 @@ class AnalysisControlPanel(QWidget):
         super().__init__(parent)
         self._roi: tuple | None = None
         self._line: dict | None = None
+        self._elapsed_seconds: int = 0
+        self._run_timer = QTimer(self)
+        self._run_timer.setInterval(1000)
+        self._run_timer.timeout.connect(self._on_timer_tick)
         self._build_ui()
         # Restore last used output directory
         saved = QSettings("FilterImageComparator", "FilterImageComparator").value(
@@ -93,7 +97,10 @@ class AnalysisControlPanel(QWidget):
 
         # ── Output + ROI + Run ─────────────────────────────────────────
         run_box = QGroupBox("Output & Run")
-        run_layout = QVBoxLayout(run_box)
+        run_layout = QHBoxLayout(run_box)
+
+        # ── Left column: all selection / status controls ────────────────
+        left_col = QVBoxLayout()
 
         out_row = QHBoxLayout()
         self._out_dir = QLineEdit()
@@ -102,19 +109,9 @@ class AnalysisControlPanel(QWidget):
         btn_browse = QPushButton("Browse…")
         btn_browse.clicked.connect(self._browse_output)
         out_row.addWidget(btn_browse)
-        run_layout.addLayout(out_row)
+        left_col.addLayout(out_row)
 
-        roi_row = QHBoxLayout()
-        self._roi_btn = QPushButton("Select ROI…")
-        self._roi_btn.setCheckable(True)
-        self._roi_btn.clicked.connect(self._toggle_roi_mode)
-        roi_row.addWidget(self._roi_btn)
-        self._roi_label = QLabel("No ROI — auto-detect")
-        self._roi_label.setStyleSheet("color: #666;")
-        roi_row.addWidget(self._roi_label)
-        roi_row.addStretch()
-        run_layout.addLayout(roi_row)
-
+        # Cross-section line row — above ROI
         line_row = QHBoxLayout()
         self._line_btn = QPushButton("Select Line…")
         self._line_btn.setCheckable(True)
@@ -124,7 +121,19 @@ class AnalysisControlPanel(QWidget):
         self._line_label.setStyleSheet("color: #666;")
         line_row.addWidget(self._line_label)
         line_row.addStretch()
-        run_layout.addLayout(line_row)
+        left_col.addLayout(line_row)
+
+        # ROI row — below line
+        roi_row = QHBoxLayout()
+        self._roi_btn = QPushButton("Select ROI…")
+        self._roi_btn.setCheckable(True)
+        self._roi_btn.clicked.connect(self._toggle_roi_mode)
+        roi_row.addWidget(self._roi_btn)
+        self._roi_label = QLabel("No ROI — auto-detect")
+        self._roi_label.setStyleSheet("color: #666;")
+        roi_row.addWidget(self._roi_label)
+        roi_row.addStretch()
+        left_col.addLayout(roi_row)
 
         align_row = QHBoxLayout()
         align_row.addWidget(QLabel("Alignment:"))
@@ -132,7 +141,7 @@ class AnalysisControlPanel(QWidget):
         self._align_label.setStyleSheet("color: #666;")
         align_row.addWidget(self._align_label)
         align_row.addStretch()
-        run_layout.addLayout(align_row)
+        left_col.addLayout(align_row)
 
         self._parallel_cb = QCheckBox("Run metrics in parallel  (faster, uses more RAM)")
         self._parallel_cb.setChecked(False)
@@ -142,29 +151,44 @@ class AnalysisControlPanel(QWidget):
             "RAM usage increases because all analyses hold their working data at once.\n"
             "When unchecked, metrics run one at a time using less memory."
         )
-        run_layout.addWidget(self._parallel_cb)
+        left_col.addWidget(self._parallel_cb)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._progress.setVisible(False)
+        left_col.addWidget(self._progress)
+
+        self._status_label = QLabel("Ready")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_col.addWidget(self._status_label)
+
+        left_col.addStretch()
+        run_layout.addLayout(left_col, stretch=3)
+
+        # ── Right column: run button + elapsed timer ────────────────────
+        right_col = QVBoxLayout()
 
         self._run_btn = QPushButton("Run Analysis")
         self._run_btn.setEnabled(False)
+        self._run_btn.setMinimumHeight(70)
         self._run_btn.setStyleSheet(
             "QPushButton { background: #2d6da3; color: white; font-weight: bold;"
             "padding: 8px 18px; border-radius: 4px; }"
             "QPushButton:disabled { background: #aaa; }"
         )
         self._run_btn.clicked.connect(self._on_run)
-        run_layout.addWidget(self._run_btn)
+        right_col.addWidget(self._run_btn)
 
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setValue(0)
-        self._progress.setVisible(False)
-        run_layout.addWidget(self._progress)
+        self._timer_label = QLabel("0:00")
+        self._timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._timer_label.setStyleSheet(
+            "font-family: monospace; font-size: 14pt; color: #444;")
+        right_col.addWidget(self._timer_label)
 
-        self._status_label = QLabel("Ready")
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        run_layout.addWidget(self._status_label)
+        right_col.addStretch()
+        run_layout.addLayout(right_col, stretch=1)
 
-        run_layout.addStretch()
         root.addWidget(run_box)
 
     # ------------------------------------------------------------------
@@ -207,6 +231,7 @@ class AnalysisControlPanel(QWidget):
             self._status_label.setText(message)
 
     def reset_progress(self) -> None:
+        self._run_timer.stop()
         self._progress.setVisible(False)
         self._progress.setValue(0)
         self._status_label.setText("Ready")
@@ -248,9 +273,17 @@ class AnalysisControlPanel(QWidget):
 
     def _on_run(self) -> None:
         self._run_btn.setEnabled(False)
+        self._elapsed_seconds = 0
+        self._timer_label.setText("0:00")
+        self._run_timer.start()
         self._status_label.setText("Running…")
         out = self._out_dir.text().strip()
         if out:
             QSettings("FilterImageComparator", "FilterImageComparator").setValue(
                 "last_output_dir", out)
         self.run_requested.emit(self.settings())
+
+    def _on_timer_tick(self) -> None:
+        self._elapsed_seconds += 1
+        m, s = divmod(self._elapsed_seconds, 60)
+        self._timer_label.setText(f"{m}:{s:02d}")

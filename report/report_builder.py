@@ -710,10 +710,13 @@ bright stars.</div>"""
             # Horizontal cross-section through the star centre — log y-axis
             if cut_a.shape[0] > 0 and cut_a.shape[1] > 0:
                 mid_row = cut_a.shape[0] // 2
-                px_offset = np.arange(cut_a.shape[1]) - cut_a.shape[1] // 2
+                # Stars near image edges produce differently-clipped cutouts; trim to common width
+                w_min = (min(cut_a.shape[1], cut_b.shape[1]) if sb is not None
+                         else cut_a.shape[1])
+                px_offset = np.arange(w_min) - w_min // 2
                 noise_floor = shared_max * 1e-4
-                xs_a = np.maximum(cut_a[mid_row, :], noise_floor)
-                xs_b_vals = (np.maximum(cut_b[mid_row, :], noise_floor)
+                xs_a = np.maximum(cut_a[mid_row, :w_min], noise_floor)
+                xs_b_vals = (np.maximum(cut_b[mid_row, :w_min], noise_floor)
                              if sb is not None else None)
                 ax_xs.semilogy(px_offset, xs_a, color="steelblue",
                                linewidth=1.0, label=ra.label)

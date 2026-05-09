@@ -459,6 +459,9 @@ class SpatialDetailAnalyzer:
     @staticmethod
     def _plot_cross_section(pos: np.ndarray, prof_a: np.ndarray, prof_b: np.ndarray,
                              label_a: str, label_b: str, title: str) -> plt.Figure:
+        # Images with slightly different pixel dimensions produce different-length profiles
+        n = min(len(pos), len(prof_a), len(prof_b))
+        pos, prof_a, prof_b = pos[:n], prof_a[:n], prof_b[:n]
         fig, ax1 = plt.subplots(figsize=(9, 4), constrained_layout=True)
         ax1.plot(pos, prof_a, color="steelblue", linewidth=1.5, label=label_a)
         ax1.plot(pos, prof_b, color="tomato", linewidth=1.5, label=label_b)
