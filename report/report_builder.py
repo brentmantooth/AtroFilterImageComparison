@@ -436,6 +436,21 @@ These metrics are normalised to unit amplitude and are valid regardless of filte
 {img_mtf}
 <p class="caption">MTF curves for both filters overlaid. Higher curve = better
 contrast preservation at fine scales.</p>
+<div class="info-box"><strong>Reading the MTF plot:</strong>
+An ideal MTF starts at 1.0 (zero frequency) and decreases monotonically to 0 at
+the Nyquist frequency (0.5 cycles/pixel). Optical aberrations, atmospheric seeing,
+and focus errors lower the curve — especially at higher spatial frequencies.
+A higher MTF means better contrast preservation for fine detail: sharper stars and
+more distinct nebula filaments.<br><br>
+<strong>MTF50</strong> is the spatial frequency where contrast falls to 50% —
+analogous to a "half-power" point. Higher MTF50 = sharper images. If one filter's
+curve lies consistently above the other, it delivers better sharpness at all scales.
+If the curves cross, one filter may be sharper at fine scales while the other
+preserves mid-scale contrast better.<br><br>
+<strong>Common causes of a lower MTF curve:</strong> poor seeing, focus offset,
+filter tilt, or optical aberrations introduced by the filter glass. A significant
+MTF difference between filters that should be optically identical warrants checking
+filter flatness and seating.</div>
 
 {img_scatter}
 <p class="caption">Per-star FWHM correlation. Points near the slope = 1 line indicate
@@ -476,9 +491,9 @@ large differences may indicate filter flatness issues.</div>"""
                 return None
             # Grid with same aspect ratio as image; long axis = 400 px
             if img_w >= img_h:
-                gw, gh = 400, max(1, int(400 * img_h / img_w))
+                gw, gh = 300, max(1, int(300 * img_h / img_w))
             else:
-                gh, gw = 400, max(1, int(400 * img_w / img_h))
+                gh, gw = 300, max(1, int(300 * img_w / img_h))
             gx, gy = np.meshgrid(np.linspace(0, img_w, gw),
                                   np.linspace(0, img_h, gh))
             coords = np.array([(p[0], p[1]) for p in pts])
@@ -486,7 +501,7 @@ large differences may indicate filter flatness issues.</div>"""
             m = _griddata(coords, vals, (gx, gy), method="linear")
             nn = _griddata(coords, vals, (gx, gy), method="nearest")
             m = np.where(np.isnan(m), nn, m)
-            return _gaussian_filter(m, sigma=3.0)
+            return _gaussian_filter(m, sigma=4.0)
 
         map_a = _make_map(pts_a, img_h_a, img_w_a)
         map_b = _make_map(pts_b, img_h_b, img_w_b)
@@ -1102,11 +1117,21 @@ dashed line marks the boundary between low (coarse structure) and mid/high frequ
         xs_context_html = ""
         if has_crosshair and "xs_context" in figs:
             xs_context_html = f"""
+<div class="info-box">The cross-section extracts a 1-D brightness profile along the
+line drawn in the viewer. The normalised profile shows relative brightness scaled to the
+mean signal level — use it to compare which filter captures more emission or suppresses
+more continuum. The raw profile shows actual pixel counts, making it easy to assess the
+absolute signal difference and dynamic range. A flatter profile in a continuum-dominated
+field may indicate better sky suppression; a higher peak in an emission region indicates
+greater throughput for that line.</div>
 {_hires_img_tag(figs["xs_context"], "xs_context")}
 <p class="caption">Zoomed crop centred on the cross-section line.
 Orange line = {ra.label}, blue line = {rb.label}.</p>
 {_hires_img_tag(figs.get("xs_image_profile"), "xs_image_profile")}
-<p class="caption">Brightness profile along the drawn line (mean-signal-normalised).</p>"""
+<p class="caption">Brightness profile along the drawn line (mean-signal-normalised).</p>
+{_hires_img_tag(figs.get("xs_image_profile_raw"), "xs_image_profile_raw")}
+<p class="caption">Raw pixel counts (ADU) along the cross-section line.
+Use this to assess absolute signal levels and dynamic range between filters.</p>"""
         else:
             xs_context_html = (
                 '<div class="info-box">No cross-section line was drawn. '
@@ -1131,7 +1156,13 @@ colour scale; the third panel shows the difference A−B.</div>
 <div class="info-box">Measures how much pixel values vary within a neighbourhood.
 Higher values in nebula regions indicate more preserved local detail and contrast.
 <strong>Contrast ratio</strong> = median(nebula std) / median(background std);
-a higher ratio indicates better differentiation of nebula structure from background.</div>
+a higher ratio indicates better differentiation of nebula structure from background.
+Each map pixel contains the standard deviation of surrounding pixels within a square
+window. Brighter regions contain more local variation — typically nebula filaments,
+star halos, or noise. A filter with higher std values in targeted emission regions
+preserves more structure; higher std in blank sky regions indicates more photon noise.
+The cross-section profiles below each map pair show how local detail amplitude varies
+along the selected line.</div>
 <table>
   <tr><th>Kernel size</th><th>{ra.label}</th><th>{rb.label}</th></tr>
   {cr_rows}
@@ -1144,7 +1175,13 @@ The difference map (right) highlights where one filter preserves more local vari
 <div class="info-box">The Laplacian of Gaussian highlights regions of rapid intensity
 change at a specific spatial scale (controlled by σ). Brighter regions in |LoG| maps
 indicate stronger local curvature — sharper edges and finer nebula filaments.
-Smaller σ highlights finer features; larger σ highlights broader structures.</div>
+Smaller σ highlights finer features; larger σ highlights broader structures.
+LoG works by Gaussian-smoothing the image (suppressing structure finer than σ) and
+then computing the Laplacian (second spatial derivative), which peaks at intensity
+boundaries. |LoG| is shown so bright-to-dark and dark-to-bright edges are treated
+equally. Compare maps at each σ: a sharper or higher-contrast filter will show
+brighter LoG response at small σ values. Cross-section profiles reveal subtle
+differences in edge sharpness along the selected line.</div>
 {figs_for("log_")}
 <p class="caption">|LoG| maps at σ = 1.5, 3, and 6 px (shared colour scale per row).
 A filter preserving more fine detail shows brighter, more defined boundaries at small σ.</p>
@@ -1156,7 +1193,13 @@ for noise estimation. Levels 2–3 carry the most relevant signal for filter com
 <strong>SNR</strong> = signal energy / noise energy at each level; SNR &gt; 1
 indicates signal-dominated.
 Estimated noise (σ): <strong>{ra.label}</strong> = {sigma_a},
-<strong>{rb.label}</strong> = {sigma_b} (normalised units)</div>
+<strong>{rb.label}</strong> = {sigma_b} (normalised units)
+Each level captures structure at roughly 2<sup>level</sup> pixel scales:
+Level 1 ≈ 2 px (noise-dominated), Level 2 ≈ 4 px (fine detail — star cores,
+thin filaments), Level 3 ≈ 8 px (medium structures — emission knots, shell edges),
+Level 4 ≈ 16 px (broader features). A higher SNR at Level 2 indicates the filter
+preserves sub-arcsecond detail better; Level 3 reflects medium-scale structure.
+Cross-section profiles show how detail amplitude varies spatially along the selected line.</div>
 
 {_hires_img_tag(figs.get("wavelet_snr"), "Wavelet SNR")}
 <p class="caption">Per-level SNR for both filters. Level 1 SNR &lt; 1 is expected

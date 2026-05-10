@@ -96,6 +96,14 @@ class SpatialDetailAnalyzer:
             pos_b, prof_b = self._sample_line(norm_b, **crosshair)
             figures["xs_image_profile"] = self._plot_image_profile(
                 pos_a, prof_a, pos_b, prof_b, image_a.label, image_b.label)
+            pos_a_raw, prof_a_raw = self._sample_line(image_a.data, **crosshair)
+            pos_b_raw, prof_b_raw = self._sample_line(image_b.data, **crosshair)
+            figures["xs_image_profile_raw"] = self._plot_image_profile(
+                pos_a_raw, prof_a_raw, pos_b_raw, prof_b_raw,
+                image_a.label, image_b.label,
+                title="Cross-section brightness profile (raw counts)",
+                ylabel="Pixel value (raw ADU)",
+            )
 
         result["crosshair"] = crosshair
         result["figures"] = figures
@@ -540,15 +548,17 @@ class SpatialDetailAnalyzer:
     @staticmethod
     def _plot_image_profile(pos_a: np.ndarray, prof_a: np.ndarray,
                              pos_b: np.ndarray, prof_b: np.ndarray,
-                             label_a: str, label_b: str) -> plt.Figure:
+                             label_a: str, label_b: str,
+                             title: str = "Cross-section brightness profile",
+                             ylabel: str = "Pixel value (normalised)") -> plt.Figure:
         fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
         ax.plot(pos_a, prof_a, color="#ff7f0e", linewidth=1.5,
                 alpha=XS_LINE_ALPHA, label=label_a)
         ax.plot(pos_b, prof_b, color="#1f77b4", linewidth=1.5,
                 alpha=XS_LINE_ALPHA, label=label_b)
         ax.set_xlabel("Position along line (px)")
-        ax.set_ylabel("Pixel value (normalised)")
-        ax.set_title("Cross-section brightness profile")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         return fig
